@@ -1,0 +1,31 @@
+# Runtime data. The app recreates all of it on first run, and every file here
+# is personal: the library, caches, saved folders, settings and credentials.
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+backups/
+cache/
+projects/
+history.json
+settings.json
+projects.json
+categories.json
+tags.json
+*.v1.bak
+*.tmp
+metadata_report.txt
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.env
+
+# Editor and OS noise
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
