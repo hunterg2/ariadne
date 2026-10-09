@@ -1,10 +1,18 @@
 # Ariadne
 
-Ariadne is a local web app for sorting through large folders of images, built
-for the output of image generators such as ComfyUI. It runs a small Flask
-server on your own machine, opens a browser tab, and lets you rate, tag, search,
-de-duplicate, edit and export images without ever moving the originals unless
-you ask it to.
+Ariadne is a local web app for organizing large folders of images. It runs a
+small Flask server on your own machine, opens a browser tab, and lets you rate,
+tag, search, de-duplicate, edit and export images without ever moving the
+originals unless you ask it to. Folders you add can keep themselves in step
+with the disk.
+
+It is fully local and fully private: the browser talks only to the server on
+your machine, and nothing is sent anywhere unless you choose a hosted vision
+model for tag suggestions (Ollama keeps even those local).
+
+If your images came out of an image generator such as ComfyUI, A1111 or Forge,
+Ariadne also reads the prompt and settings out of each file and makes them
+searchable. It grew up sorting that kind of output, and the tools suit it.
 
 The page calls itself "Image Organizer"; Ariadne is the project name.
 
@@ -20,8 +28,8 @@ The page calls itself "Image Organizer"; Ariadne is the project name.
 - Search one folder or the whole library with a small query language
   (`prompt: "red dress" & night; tag: portrait; steps: 20...30`).
 - Sidebar of saved folders with groups, pins, aliases and drag ordering, plus
-  auto-updating groups that mirror the subfolders of a watched folder (for
-  example a generator's output directory).
+  auto-updating groups that mirror the subfolders of any folder you set (a
+  camera import, a downloads folder, a generator's output directory).
 - Duplicate finder using a perceptual hash, with a review screen that suggests
   which copy to keep, and a side-by-side compare view.
 - Soft delete into a `trash/` subfolder beside the image, with restore and
