@@ -29,3 +29,15 @@ env/
 .idea/
 .DS_Store
 Thumbs.db
+
+# the local key that signs the PIN cookie for other devices, and frontend
+# tooling
+ariadne.key
+web/node_modules/
+web/.vite/
+.pytest_cache/
+# browser tests (Playwright) write their reports and traces here
+web/test-results/
+web/playwright-report/
+# the release zip and its staging folder (scripts/build_release.py)
+build/

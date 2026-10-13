@@ -30,11 +30,8 @@ except ImportError:
     sys.exit("Pillow is not installed. Run:  pip install pillow")
 
 # Imported rather than reimplemented, so this report always matches what the
-# app actually does.
-try:
-    import metadata
-except ImportError:
-    sys.exit("metadata.py not found. Keep it next to this script (and app.py).")
+# app actually does. It lives in the ariadne package beside this script.
+from ariadne import metadata
 
 Image.MAX_IMAGE_PIXELS = None
 

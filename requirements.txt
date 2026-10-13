@@ -1,7 +1,11 @@
-# The two packages the app imports. Everything else is the standard library.
+# The packages the app imports. Everything else is the standard library.
 Flask>=3.0
 Pillow>=10.0
 
 # Optional. If installed, "hard" deletes go to the system recycle bin instead
 # of being removed outright.
 # send2trash>=1.8
+
+# Optional. Enables "python app.py --tray": a tray icon keeps the server
+# running with no console window.
+# pystray>=0.19

@@ -2,3 +2,7 @@
 start.bat text eol=crlf
 *.ico binary
 *.png binary
+
+# Built frontend bundle: committed so the app runs with Python alone, but
+# not worth reading in a diff.
+web/dist/** linguist-generated=true -diff

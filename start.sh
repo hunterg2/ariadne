@@ -15,8 +15,8 @@ if [ -z "$PY" ]; then
   exit 1
 fi
 
-if ! "$PY" -c "import flask, PIL" >/dev/null 2>&1; then
-  echo "Installing what it needs (Flask and Pillow), just this once..."
+if ! "$PY" -c "import flask, PIL, cryptography" >/dev/null 2>&1; then
+  echo "Installing what it needs (Flask, Pillow and cryptography), just this once..."
   "$PY" -m pip install --quiet -r requirements.txt || {
     echo "  Could not install the requirements. Try: $PY -m pip install -r requirements.txt"
     read -r _ 2>/dev/null

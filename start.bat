@@ -1,5 +1,5 @@
 @echo off
-title Image Organizer
+title Ariadne
 cd /d "%~dp0"
 
 rem Ariadne launcher for Windows. It lives beside app.py and runs whatever
@@ -22,9 +22,9 @@ if not defined PY (
   exit /b 1
 )
 
-%PY% -c "import flask, PIL" >nul 2>&1
+%PY% -c "import flask, PIL, cryptography" >nul 2>&1
 if errorlevel 1 (
-  echo Installing what it needs (Flask and Pillow), just this once...
+  echo Installing what it needs (Flask, Pillow and cryptography), just this once...
   %PY% -m pip install --quiet --disable-pip-version-check -r requirements.txt
   if errorlevel 1 (
     echo.

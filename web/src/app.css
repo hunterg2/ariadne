@@ -1,0 +1,131 @@
+/* Design tokens. Dark is the default; light overrides below. Everything in
+   the app reads these; components never hard-code a colour. */
+:root {
+  --sp1: 4px;  --sp2: 8px;  --sp3: 12px; --sp4: 16px;
+  --sp5: 20px; --sp6: 24px; --sp8: 32px; --sp10: 40px;
+  --r-sm: 6px; --r: 10px; --r-lg: 16px; --r-pill: 999px;
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
+  --mono: "JetBrains Mono", "Cascadia Code", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --dur: .16s;
+  --ease: cubic-bezier(.2, .7, .3, 1);
+  --shadow-1: 0 2px 8px rgba(0, 0, 0, .28);
+  --shadow-2: 0 12px 32px rgba(0, 0, 0, .45);
+
+  --bg: #181825; --surface: #1e1e2e; --surface-2: #262637; --border: #313244; --border-strong: #45475a;
+  --hover: rgba(205, 214, 244, .07); --hover-strong: rgba(205, 214, 244, .14);
+  --text: #cdd6f4; --muted: #9399b2; --faint: #6c7086;
+  --accent: #cba6f7; --accent-strong: #d8bdfa; --accent-soft: rgba(203, 166, 247, .18); --on-accent: #11111b;
+  --select: #a6e3a1; --select-soft: rgba(166, 227, 161, .18);
+  --warn: #f9e2af; --warn-soft: rgba(249, 226, 175, .16);
+  --danger: #f38ba8; --danger-soft: rgba(243, 139, 168, .16);
+  --info: #89b4fa; --info-soft: rgba(137, 180, 250, .16);
+  --star: #f9e2af;
+  --rail: #11111b;
+  --scrim: rgba(17, 17, 27, .72);
+  color-scheme: dark;
+}
+
+:root[data-theme="light"] {
+  --bg: #e6e9ef; --surface: #eff1f5; --surface-2: #ffffff; --border: #ccd0da; --border-strong: #acb0be;
+  --hover: rgba(76, 79, 105, .07); --hover-strong: rgba(76, 79, 105, .14);
+  --text: #4c4f69; --muted: #6c6f85; --faint: #8c8fa1;
+  --accent: #8839ef; --accent-strong: #7320e0; --accent-soft: rgba(136, 57, 239, .14); --on-accent: #ffffff;
+  --select: #40a02b; --select-soft: rgba(64, 160, 43, .16);
+  --warn: #df8e1d; --warn-soft: rgba(223, 142, 29, .16);
+  --danger: #d20f39; --danger-soft: rgba(210, 15, 57, .12);
+  --info: #1e66f5; --info-soft: rgba(30, 102, 245, .14);
+  --star: #df8e1d;
+  --rail: #dce0e8;
+  --scrim: rgba(76, 79, 105, .55);
+  --shadow-1: 0 2px 8px rgba(0, 0, 0, .10);
+  --shadow-2: 0 12px 32px rgba(0, 0, 0, .18);
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]):not([data-theme="light"]) {
+    --bg: #e6e9ef; --surface: #eff1f5; --surface-2: #ffffff; --border: #ccd0da; --border-strong: #acb0be;
+    --hover: rgba(76, 79, 105, .07); --hover-strong: rgba(76, 79, 105, .14);
+    --text: #4c4f69; --muted: #6c6f85; --faint: #8c8fa1;
+    --accent: #8839ef; --accent-strong: #7320e0; --accent-soft: rgba(136, 57, 239, .14); --on-accent: #ffffff;
+    --select: #40a02b; --select-soft: rgba(64, 160, 43, .16);
+    --warn: #df8e1d; --warn-soft: rgba(223, 142, 29, .16);
+    --danger: #d20f39; --danger-soft: rgba(210, 15, 57, .12);
+    --info: #1e66f5; --info-soft: rgba(30, 102, 245, .14);
+    --star: #df8e1d;
+    --rail: #dce0e8;
+    --scrim: rgba(76, 79, 105, .55);
+    --shadow-1: 0 2px 8px rgba(0, 0, 0, .10);
+    --shadow-2: 0 12px 32px rgba(0, 0, 0, .18);
+    color-scheme: light;
+  }
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 13.5px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+#app { height: 100%; }
+
+h1, h2, h3, h4 { margin: 0; font-weight: 600; line-height: 1.25; }
+h1 { font-size: 20px; }
+h2 { font-size: 16px; }
+h3 { font-size: 14px; }
+h4 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+p { margin: 0; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code, kbd, pre { font-family: var(--mono); }
+
+input, textarea, select {
+  font: inherit; color: var(--text); background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: var(--r-sm); padding: 6px 9px;
+  outline: none; transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+input:focus, textarea:focus, select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+input::placeholder, textarea::placeholder { color: var(--faint); }
+input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width: 15px; height: 15px; padding: 0; }
+input[type="range"] { accent-color: var(--accent); padding: 0; border: 0; background: transparent; }
+textarea { resize: vertical; min-height: 72px; line-height: 1.45; }
+/* touch screens: menu rows and fields tall enough for a finger */
+@media (pointer: coarse) {
+  .menu-item { min-height: 40px; }
+  input, select { min-height: 36px; }
+}
+select { padding-right: 24px; }
+label.field { display: block; font-size: 11.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-bottom: 4px; }
+.hint { color: var(--muted); font-size: 12.5px; }
+.muted { color: var(--muted); }
+.faint { color: var(--faint); }
+.mono { font-family: var(--mono); font-size: 12px; }
+.row { display: flex; align-items: center; gap: var(--sp2); }
+.spacer { flex: 1; }
+.stack { display: flex; flex-direction: column; gap: var(--sp3); }
+.divider { height: 1px; background: var(--border); margin: var(--sp4) 0; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); padding: var(--sp4); }
+.badge {
+  display: inline-flex; align-items: center; gap: 4px; padding: 1px 7px; border-radius: var(--r-pill);
+  font-size: 11px; font-weight: 600; line-height: 1.5; background: var(--surface-2); color: var(--muted);
+}
+.badge.accent { background: var(--accent-soft); color: var(--accent); }
+.badge.ok { background: var(--select-soft); color: var(--select); }
+.badge.warn { background: var(--warn-soft); color: var(--warn); }
+.badge.danger { background: var(--danger-soft); color: var(--danger); }
+.badge.info { background: var(--info-soft); color: var(--info); }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 6px; border: 2px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background: var(--faint); background-clip: padding-box; }
+::-webkit-scrollbar-track { background: transparent; }
+
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+@keyframes spin { to { transform: rotate(360deg); } }
+.spin { animation: spin 1s linear infinite; }

@@ -1,0 +1,223 @@
+"""SQLite access: one connection per thread, the baseline schema, the small
+key/value table and backups.
+
+Schema changes after the baseline go through ``ariadne/migrations`` (Stage 1).
+"""
+
+import sqlite3
+import threading
+import time
+
+from ariadne import config
+
+_local = threading.local()
+_generation = 0
+
+META_SQL = """
+    CREATE TABLE IF NOT EXISTS meta (
+        path      TEXT PRIMARY KEY,
+        mtime     INTEGER,
+        size      INTEGER,
+        ctime     REAL,
+        width     INTEGER,
+        height    INTEGER,
+        prompt    TEXT,
+        negative  TEXT,
+        steps     TEXT,
+        cfg       TEXT,
+        sampler   TEXT,
+        scheduler TEXT,
+        seed      TEXT,
+        denoise   TEXT,
+        model     TEXT,
+        loras     TEXT,
+        phash     TEXT,
+        source    TEXT,
+        prompt_list  TEXT,
+        prompt_line  INTEGER,
+        prompt_lines INTEGER,
+        kind         TEXT,
+        camera_make  TEXT,
+        camera_model TEXT,
+        lens         TEXT,
+        exposure     TEXT,
+        f_number     TEXT,
+        iso          TEXT,
+        focal        TEXT,
+        taken_at     TEXT,
+        lat          REAL,
+        lon          REAL,
+        software     TEXT
+    );
+"""
+
+BASE_SQL = META_SQL + """
+    CREATE TABLE IF NOT EXISTS tags (
+        path TEXT NOT NULL,
+        tag  TEXT NOT NULL,
+        PRIMARY KEY (path, tag)
+    );
+    CREATE INDEX IF NOT EXISTS idx_tags_tag ON tags(tag);
+    CREATE TABLE IF NOT EXISTS trash (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        original_path TEXT NOT NULL,
+        trash_path    TEXT NOT NULL,
+        deleted_at    REAL NOT NULL,
+        stars         INTEGER DEFAULT 0,
+        tags          TEXT,
+        restorable    INTEGER DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS thumbs (
+        key   TEXT PRIMARY KEY,
+        path  TEXT NOT NULL,
+        mtime INTEGER,
+        size  INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_thumbs_path ON thumbs(path);
+    CREATE TABLE IF NOT EXISTS kv (
+        key   TEXT PRIMARY KEY,
+        value TEXT
+    );
+"""
+
+
+def db():
+    conn = getattr(_local, "conn", None)
+    # a project switch bumps the generation, which retires every open handle
+    if conn is not None and getattr(_local, "gen", -1) != _generation:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+        conn = None
+        _local.conn = None
+    if conn is None:
+        conn = sqlite3.connect(str(config.paths.db_file), check_same_thread=False,
+                               timeout=30)
+        conn.row_factory = sqlite3.Row
+        try:
+            # WAL is a property of the file: once any connection has set it,
+            # a second one racing for the lock can simply carry on
+            conn.execute("PRAGMA journal_mode=WAL")
+        except sqlite3.OperationalError:
+            pass
+        conn.execute("PRAGMA synchronous=NORMAL")
+        # INSERT OR REPLACE must fire delete triggers, or the search index
+        # keeps entries for rows that are gone
+        conn.execute("PRAGMA recursive_triggers=ON")
+        _local.conn = conn
+        _local.gen = _generation
+    return conn
+
+
+# Full-text search over prompts. An external-content FTS5 table indexed by
+# trigrams, so the query language's "...contains..." matches stay exact while
+# a 200k-image library answers in tens of milliseconds instead of seconds.
+# Kept in step with ``meta`` by triggers; rebuilt whenever ``meta`` is.
+FTS_SQL = """
+    CREATE VIRTUAL TABLE IF NOT EXISTS meta_fts USING fts5(
+        prompt, negative, content='meta', content_rowid='rowid',
+        tokenize='trigram'
+    );
+    CREATE TRIGGER IF NOT EXISTS trg_meta_fts_ai AFTER INSERT ON meta BEGIN
+        INSERT INTO meta_fts(rowid, prompt, negative)
+        VALUES (new.rowid, new.prompt, new.negative);
+    END;
+    CREATE TRIGGER IF NOT EXISTS trg_meta_fts_ad AFTER DELETE ON meta BEGIN
+        INSERT INTO meta_fts(meta_fts, rowid, prompt, negative)
+        VALUES ('delete', old.rowid, old.prompt, old.negative);
+    END;
+    CREATE TRIGGER IF NOT EXISTS trg_meta_fts_au AFTER UPDATE ON meta BEGIN
+        INSERT INTO meta_fts(meta_fts, rowid, prompt, negative)
+        VALUES ('delete', old.rowid, old.prompt, old.negative);
+        INSERT INTO meta_fts(rowid, prompt, negative)
+        VALUES (new.rowid, new.prompt, new.negative);
+    END;
+"""
+FTS_ENABLED = True
+
+
+def ensure_fts(d, rebuild=False):
+    """Create the prompt search index and its triggers if they are missing.
+    Without FTS5 (a custom SQLite build) searches fall back to plain LIKE."""
+    global FTS_ENABLED
+    try:
+        d.executescript(FTS_SQL)
+        if rebuild:
+            d.execute("INSERT INTO meta_fts(meta_fts) VALUES ('rebuild')")
+        d.commit()
+        FTS_ENABLED = True
+    except sqlite3.OperationalError as exc:
+        FTS_ENABLED = False
+        print(f"[db] prompt search index unavailable ({exc}); searches use LIKE")
+
+
+def retire_connections():
+    """Called on a project switch: every thread reopens against the new file."""
+    global _generation
+    _generation += 1
+
+
+def init_db():
+    d = db()
+    d.executescript(BASE_SQL)
+    d.commit()
+
+    # The parser has changed, so cached rows are stale. Drop and rebuild them;
+    # nothing is lost, the values are all derived from the files themselves.
+    rebuilt = False
+    if kv_get("meta_cache_version") != str(config.META_CACHE_VERSION):
+        d.execute("DROP TABLE IF EXISTS meta")
+        d.executescript(META_SQL)
+        # every indexed image has to be read again for the new columns
+        d.execute("UPDATE images SET indexed_at=NULL") if _has_table(d, "images") else None
+        d.commit()
+        kv_set("meta_cache_version", config.META_CACHE_VERSION)
+        print("[cache] metadata cache rebuilt for the new extractor")
+        rebuilt = True
+    # dropping meta took its triggers with it; the index must start over too
+    ensure_fts(d, rebuild=rebuilt)
+
+
+def _has_table(d, name):
+    return d.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                     (name,)).fetchone() is not None
+
+
+def kv_get(key, default=None):
+    row = db().execute("SELECT value FROM kv WHERE key=?", (key,)).fetchone()
+    return row["value"] if row else default
+
+
+def kv_set(key, value):
+    d = db()
+    d.execute("INSERT OR REPLACE INTO kv VALUES (?,?)", (key, str(value)))
+    d.commit()
+
+
+def backup_db(keep=config.BACKUPS_KEPT):
+    """A consistent copy of the ratings and tags on every start. The library is
+    the one thing here that cannot be regenerated from the files on disk."""
+    db_file = config.paths.db_file
+    backup_dir = config.paths.backup_dir
+    if not db_file.exists():
+        return None
+    try:
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        dest = backup_dir / f"organizer-{time.strftime('%Y%m%d-%H%M%S')}.db"
+        src = sqlite3.connect(str(db_file))
+        dst = sqlite3.connect(str(dest))
+        with dst:
+            src.backup(dst)          # safe even with WAL and open readers
+        src.close()
+        dst.close()
+        old = sorted(backup_dir.glob("organizer-*.db"))
+        for stale in old[:-keep]:
+            try:
+                stale.unlink()
+            except OSError:
+                pass
+        return dest
+    except (sqlite3.Error, OSError) as exc:
+        print(f"[backup] skipped: {exc}")
+        return None
