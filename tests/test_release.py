@@ -3,6 +3,7 @@ launchers. The full build (a download and a pip install) runs in the release
 workflow, not here."""
 
 import importlib.util
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -43,4 +44,5 @@ def test_launchers_point_python_at_the_app_and_the_data_folder():
         assert 'python\\python.exe" "%~dp0app\\app.py"' in text and '--app-dir "%~dp0data"' in text
         assert "\r\n" in text
     assert "--tray --no-browser" in tray and "--tray" not in plain
-    assert mod.version().startswith("0.")
+    # the zip is named after it, so it has to be a plain version number
+    assert re.fullmatch(r"\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?", mod.version())
