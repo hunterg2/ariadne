@@ -15,7 +15,7 @@ from ariadne import config
 
 Image.MAX_IMAGE_PIXELS = None
 
-__version__ = "0.2.0-dev"
+__version__ = "2.0.0"
 
 
 def create_app(app_dir=None):
