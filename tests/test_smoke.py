@@ -22,6 +22,35 @@ def test_settings_roundtrip(client):
     assert client.get("/api/settings").json["theme"] == 2
 
 
+def test_settings_save_waits_out_a_reader(client, monkeypatch):
+    """Windows refuses to replace a file another thread is reading at that
+    instant; the save retries instead of failing the request."""
+    from ariadne import store
+
+    real = os.replace
+    calls = []
+
+    def flaky(src, dst):
+        calls.append(dst)
+        if len(calls) < 3:
+            raise PermissionError(5, "Access is denied")
+        return real(src, dst)
+
+    monkeypatch.setattr(store.os, "replace", flaky)
+    monkeypatch.setattr(store.time, "sleep", lambda s: None)
+    settings = client.get("/api/settings").json
+    settings["theme"] = 1
+    assert client.post("/api/settings", json=settings).json["success"]
+    assert len(calls) == 3
+    assert client.get("/api/settings").json["theme"] == 1
+
+    # still a failure when the file never comes free
+    calls.clear()
+    monkeypatch.setattr(store.os, "replace", lambda s, d: (_ for _ in ()).throw(PermissionError(5, "busy")))
+    res = client.post("/api/settings", json=settings)
+    assert res.status_code == 500 and res.json["success"] is False and "busy" in res.json["error"]
+
+
 def test_folder_index_reads_metadata(client, library):
     register_folder(client, library["folder"])
     rows = scan_rows(client, library["folder"])
@@ -93,12 +122,17 @@ def test_soft_trash_and_restore(client, library):
 
 
 def test_projects_switch_isolates_libraries(client, library):
-    register_folder(client, library["folder"])
+    from ariadne.services.index import indexer
+
+    register_folder(client, library["folder"])          # also starts the indexer thread
     client.post("/api/tags", json={"paths": [library["paths"][0]], "tags": ["only-here"]})
     assert client.get("/api/tags/all").json["tags"]
+    assert indexer._thread is not None
 
     res = client.post("/api/projects/create", json={"name": "Second"}).json
     assert res["success"]
+    # the switch stopped the indexer, so nothing can write across libraries
+    assert indexer._thread is None
     assert client.get("/api/tags/all").json["tags"] == []
     assert client.get("/api/history").json["history"] == []
 

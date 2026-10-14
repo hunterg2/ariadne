@@ -18,8 +18,8 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from ariadne import create_app          # noqa: E402
-from ariadne.db import db               # noqa: E402
+from ariadne import create_app  # noqa: E402
+from ariadne.db import db  # noqa: E402
 
 WORDS = ("dragon castle night neon portrait forest rain cyberpunk cat knight city "
          "sunset ocean mountain robot flower desert snow bridge temple fox owl "

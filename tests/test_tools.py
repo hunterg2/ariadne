@@ -12,6 +12,7 @@ def _distinct(path, seed):
     """A gradient with a few shapes: flat test images all hash alike, so the
     duplicate checks need pictures with real structure."""
     import random
+
     from PIL import ImageDraw
     rnd = random.Random(seed)
     im = Image.new("RGB", (160, 120))
@@ -80,6 +81,7 @@ def test_banding_finds_every_near_pair():
     small libraries above never leave the pairwise path, so plant pairs in a
     pool big enough to use the bands."""
     import random
+
     from ariadne.services import duplicates as dupes
     rnd = random.Random(7)
     hashes = [rnd.getrandbits(64) for _ in range(4000)]

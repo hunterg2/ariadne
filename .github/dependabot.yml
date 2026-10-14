@@ -1,0 +1,37 @@
+# Dependabot: GitHub opens one grouped pull request a month per ecosystem
+# when something here has a newer version, and a security update as soon as
+# a used version is reported vulnerable. These are GitHub's own PRs: merge
+# them, or close them, as you like; delete this file to stop them.
+#
+# The Python side declares ranges in requirements.txt, so version updates
+# there are rare; the exact versions the release zip installs live in
+# requirements.lock, which is regenerated on purpose by
+# scripts/lock_requirements.py at a version bump, not by Dependabot.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      python:
+        patterns: ["*"]
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: monthly
+    groups:
+      frontend:
+        patterns: ["*"]
+    ignore:
+      # svelte-check accepts TypeScript 5 and 6 only, so a TypeScript 7 bump
+      # cannot even install (PR #7, 2026-10-13). Drop this once it allows 7.
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]

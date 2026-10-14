@@ -9,26 +9,54 @@ from flask import Blueprint, Response, jsonify, request, stream_with_context
 
 from ariadne import store, tagger
 from ariadne.db import db
+from ariadne.log import log
 from ariadne.safety import guard, is_path_allowed
 from ariadne.services import files, index
 from ariadne.services import ratings as ratings_svc
 from ariadne.services.meta_cache import get_metadata
 
 try:
-    import send2trash          # optional: real recycle bin for hard deletes
+    import send2trash  # optional: real recycle bin for hard deletes
 except ImportError:
     send2trash = None
 
 bp = Blueprint("tags", __name__)
 
 
+def _names(value):
+    """Tag names from the request: text (or a number), trimmed, no '#'."""
+    if not isinstance(value, list):
+        return []
+    out = []
+    for t in value:
+        if isinstance(t, (str, int, float)) and not isinstance(t, bool) and str(t).strip():
+            out.append(str(t).strip().lstrip("#"))
+    return out
+
+
+def _ids(value):
+    """Trash row ids from the request: whole numbers only."""
+    out = []
+    for v in (value if isinstance(value, list) else []):
+        if isinstance(v, bool):
+            continue
+        try:
+            out.append(int(v))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 @bp.route("/api/tags", methods=["POST"])
 def update_tags():
     data = request.json or {}
-    paths = data.get("paths", [])
-    tags = [str(t).strip().lstrip("#") for t in data.get("tags", []) if str(t).strip()]
-    add_tags = [str(t).strip().lstrip("#") for t in data.get("add_tags", []) if str(t).strip()]
-    remove_tags = [str(t).strip().lstrip("#") for t in data.get("remove_tags", []) if str(t).strip()]
+    # library files only: a tag row makes its path readable
+    # (safety.is_path_allowed), so an outside path must not get one here
+    given = data.get("paths") if isinstance(data.get("paths"), list) else []
+    paths = [p for p in given if isinstance(p, str) and is_path_allowed(p)]
+    tags = _names(data.get("tags"))
+    add_tags = _names(data.get("add_tags"))
+    remove_tags = _names(data.get("remove_tags"))
 
     d = db()
     for path in paths:
@@ -49,8 +77,9 @@ def update_tags():
 
 @bp.route("/api/tag/check", methods=["POST"])
 def check_tagger():
-    ok, message = tagger.check((request.json or {}).get("tagger")
-                               or store.load_settings().get("tagger") or {})
+    given = (request.json or {}).get("tagger")
+    ok, message = tagger.check(given if isinstance(given, dict) and given
+                               else store.load_settings().get("tagger") or {})
     return jsonify({"ok": ok, "message": message})
 
 
@@ -60,10 +89,9 @@ def auto_tag():
     fill in as it goes. Nothing is written here; the review decides."""
     paths = [p for p in request.args.getlist("path") if guard(p)]
     settings = store.load_settings()
+    # the backend, its URL and its key come from the settings alone: a GET
+    # that could name the URL would send the stored key wherever it said
     cfg = dict(settings.get("tagger") or {})
-    for key in ("backend", "model", "url", "api_key", "extra"):
-        if request.args.get(key) is not None:
-            cfg[key] = request.args.get(key)
     if request.args.get("max_tags"):
         try:
             cfg["max_tags"] = max(1, min(40, int(request.args["max_tags"])))
@@ -115,7 +143,9 @@ def all_tags():
 @bp.route("/api/action", methods=["POST"])
 def handle_action():
     data = request.json or {}
-    paths = [p for p in data.get("paths", []) if is_path_allowed(p)]
+    given = data.get("paths") if isinstance(data.get("paths"), list) else []
+    # files only: a folder handed in here would be moved whole into trash/
+    paths = [p for p in given if isinstance(p, str) and os.path.isfile(p) and is_path_allowed(p)]
     action = data.get("action")
 
     d = db()
@@ -139,7 +169,7 @@ def handle_action():
                 try:
                     shutil.move(img_path, dest)
                 except OSError as exc:
-                    print(f"[trash] {img_path}: {exc}")
+                    log.warning(f"[trash] {img_path}: {exc}")
                     continue
                 cur = d.execute(
                     "INSERT INTO trash (original_path, trash_path, deleted_at, stars, tags, restorable) "
@@ -154,7 +184,7 @@ def handle_action():
                     else:
                         os.remove(img_path)
                 except OSError as exc:
-                    print(f"[trash] {img_path}: {exc}")
+                    log.warning(f"[trash] {img_path}: {exc}")
                     continue
                 d.execute(
                     "INSERT INTO trash (original_path, trash_path, deleted_at, stars, tags, restorable) "
@@ -192,7 +222,7 @@ def list_trash():
 
 @bp.route("/api/trash/restore", methods=["POST"])
 def restore_trash():
-    ids = (request.json or {}).get("ids", [])
+    ids = _ids((request.json or {}).get("ids"))
     if not ids:
         return jsonify({"success": True, "restored": []})
 
@@ -212,7 +242,7 @@ def restore_trash():
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             shutil.move(src, dest)
         except OSError as exc:
-            print(f"[restore] {src}: {exc}")
+            log.warning(f"[restore] {src}: {exc}")
             continue
 
         for t in json.loads(r["tags"] or "[]"):
@@ -245,7 +275,7 @@ def purge_trash():
     if data.get("all"):
         rows = d.execute("SELECT * FROM trash WHERE restorable=1").fetchall()
     else:
-        ids = data.get("ids", [])
+        ids = _ids(data.get("ids"))
         if not ids:
             return jsonify({"success": True})
         placeholders = ",".join("?" * len(ids))
@@ -256,7 +286,7 @@ def purge_trash():
             if r["trash_path"] and os.path.exists(r["trash_path"]):
                 os.remove(r["trash_path"])
         except OSError as exc:
-            print(f"[purge] {r['trash_path']}: {exc}")
+            log.warning(f"[purge] {r['trash_path']}: {exc}")
         d.execute("DELETE FROM trash WHERE id=?", (r["id"],))
     d.commit()
     return jsonify({"success": True, "purged": len(rows)})

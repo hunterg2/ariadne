@@ -5,11 +5,12 @@
   import Kbd from "../lib/ui/Kbd.svelte";
   import Icon from "../lib/ui/Icon.svelte";
   import BrowseDialog from "../lib/library/BrowseDialog.svelte";
+  import BugReportDialog from "../lib/settings/BugReportDialog.svelte";
   import { settings, ui, patchUi, patchSettings, flushSettings, UI_DEFAULTS } from "../lib/stores/settings.svelte";
   import { library } from "../lib/stores/library.svelte";
   import { ACTIONS, keysFor, comboOf } from "../lib/hotkeys";
   import { toast, reportError } from "../lib/stores/toasts.svelte";
-  import { bytes, count, basename } from "../lib/format";
+  import { bytes, count, basename, relative } from "../lib/format";
 
   let cache: Awaited<ReturnType<typeof api.cacheStats>> | null = $state(null);
   let lib: Awaited<ReturnType<typeof api.libraryStats>> | null = $state(null);
@@ -19,6 +20,40 @@
   let authSt: api.AuthStatus | null = $state(null);
   let pin = $state("");
   let pinBusy = $state(false);
+  let upd: api.UpdateState | null = $state(null);
+  let updBusy = $state(false);
+  let diagBusy = $state(false);
+  let reportOpen = $state(false);
+
+  /* ---- updates and diagnostics ---- */
+  async function checkUpdates() {
+    updBusy = true;
+    try {
+      upd = await api.checkUpdates();
+      toast(upd.error ? upd.error : upd.newer ? `Ariadne ${upd.latest} is out.` : "You have the newest release.", { error: !!upd.error });
+    } catch (e) { reportError(e); } finally { updBusy = false; }
+  }
+  async function copyText(text: string) {
+    if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(text); return; }
+    // plain http from another device has no clipboard API; the old way still works
+    const ta = document.createElement("textarea");
+    ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select(); document.execCommand("copy"); ta.remove();
+  }
+  async function copyDiagnostics() {
+    diagBusy = true;
+    try {
+      const d = await api.diagnostics();
+      try {
+        await copyText(d.text);
+        toast("Diagnostics copied. Paste them into a bug report.");
+      } catch {
+        // a browser that refuses the clipboard still gets the text, as a file
+        location.href = "/api/system/diagnostics?download=1";
+        toast("The browser refused the clipboard, so the diagnostics are downloading as a file instead.");
+      }
+    } catch (e) { reportError(e, "Could not gather the diagnostics."); } finally { diagBusy = false; }
+  }
 
   async function savePin(e: Event) {
     e.preventDefault();
@@ -80,6 +115,7 @@
     try { cache = await api.cacheStats(); lib = await api.libraryStats(); projects = (await api.projects()).projects; } catch { /* ignore */ }
     try { sys = await api.systemInfo(); } catch { /* ignore */ }
     try { authSt = await api.authStatus(); } catch { /* ignore */ }
+    try { upd = await api.updateState(); } catch { /* ignore */ }
   }
   onMount(refresh);
 
@@ -207,6 +243,28 @@
   </section>
 
   <section>
+    <h3>Backup</h3>
+    <p class="hint">The open library's database, settings and sidebar in one zip, together with the key file. Save it somewhere other than this computer now and then: your image folders are not in it, and everything else can be rebuilt.</p>
+    {#if sys}
+      <div class="grid2">
+        <span class="field">Key file</span>
+        <div class="stack">
+          {#if sys.backup.key_exists}
+            <span class="hint"><code>{sys.backup.key_path}</code> signs the cookie other devices get after the PIN. A new one only signs them out.</span>
+          {:else}
+            <span class="hint">None yet. It is made the first time another device enters the PIN, at <code>{sys.backup.key_path}</code>.</span>
+          {/if}
+        </div>
+        <span class="field">Backup</span>
+        <div class="row wrap">
+          <Button size="sm" icon="download" onclick={() => (location.href = "/api/backup")}>Download a backup</Button>
+          <span class="hint">{count(sys.backup.files.length)} files, {bytes(sys.backup.bytes)} before compression. Restoring is copying them back into the data folder; the zip says how.</span>
+        </div>
+      </div>
+    {/if}
+  </section>
+
+  <section>
     <h3>Background service</h3>
     <p class="hint">Tray mode keeps Ariadne running without a console window, so a phone on the network can always reach it; start at logon makes that automatic.</p>
     {#if sys}
@@ -331,9 +389,43 @@
       </div>
     </div>
   </section>
+
+  <section>
+    <h3>About</h3>
+    {#if sys}
+      <div class="grid2">
+        <span class="field">Version</span>
+        <div class="stack">
+          <span>
+            Ariadne {sys.version}.
+            {#if upd?.newer}<a href={upd.url} target="_blank" rel="noopener">Ariadne {upd.latest} is out.</a> Download the zip from the release page and replace its app and python folders.
+            {:else if upd?.error}<span class="hint">{upd.error}</span>
+            {:else if upd?.latest}<span class="hint">You have the newest release.</span>
+            {:else}<span class="hint">Not checked yet.</span>{/if}
+          </span>
+          <div class="row wrap">
+            <Button size="sm" icon="refresh" disabled={updBusy} onclick={checkUpdates}>Check for a newer release</Button>
+            <label class="check"><input type="checkbox" checked={settings.data.check_updates !== false} onchange={(e) => patchSettings({ check_updates: e.currentTarget.checked })} /> Check once a day</label>
+            {#if upd?.checked_at}<span class="hint">Last checked {relative(upd.checked_at)}.</span>{/if}
+          </div>
+          <span class="hint">Asks GitHub for the newest release of {upd?.repo ?? "the public repository"}. Nothing is downloaded or installed by itself.</span>
+        </div>
+        <span class="field">Diagnostics</span>
+        <div class="stack">
+          <div class="row wrap">
+            <Button size="sm" icon="alert" onclick={() => (reportOpen = true)}>Report a bug</Button>
+            <Button size="sm" icon="copy" disabled={diagBusy} onclick={copyDiagnostics}>Copy diagnostics</Button>
+            <Button size="sm" icon="download" onclick={() => (location.href = "/api/system/log")}>Download the log</Button>
+          </div>
+          <span class="hint">Report a bug drafts a GitHub issue from what you type and these diagnostics, shows you the text, and lets you submit it there. The diagnostics are versions, settings, accounts (never their secrets), what the scheduler last did and the end of the log. Everything Ariadne reports goes to <code>{sys.log_path}</code>, 1 MB with three older copies kept.</span>
+        </div>
+      </div>
+    {/if}
+  </section>
 </div>
 
 <BrowseDialog open={watchOpen} title="Watch a folder" confirmLabel="Watch this folder" start={library.folder ?? ""} onpick={addAutoFolder} onclose={() => (watchOpen = false)} />
+<BugReportDialog open={reportOpen} onclose={() => (reportOpen = false)} />
 
 <style>
   .settings { padding: var(--sp5); overflow: auto; height: 100%; display: flex; flex-direction: column; gap: var(--sp5); max-width: 860px; }
@@ -364,4 +456,5 @@
   .auto .mono { font-size: 11.5px; word-break: break-all; }
   .ok { color: var(--select); font-size: 12.5px; }
   .bad { color: var(--danger); font-size: 12.5px; }
+  .warn { color: var(--warn); font-size: 12.5px; }
 </style>

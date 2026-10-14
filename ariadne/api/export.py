@@ -8,10 +8,11 @@ import time
 import zipfile
 
 from flask import Blueprint, jsonify, request, send_file
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 
-from ariadne import metadata, store
+from ariadne import metadata, store, text
 from ariadne.db import db
+from ariadne.log import log
 from ariadne.safety import guard
 from ariadne.services import collections as collections_svc
 from ariadne.services import files, index
@@ -20,11 +21,19 @@ from ariadne.services import ratings as ratings_svc
 bp = Blueprint("export", __name__)
 
 
+def _file(path):
+    return isinstance(path, str) and guard(path) and os.path.isfile(path)
+
+
+def _paths(value):
+    return [p for p in value if _file(p)] if isinstance(value, list) else []
+
+
 @bp.route("/api/export", methods=["POST"])
 def export_files():
     """mode = copy | move"""
     data = request.json or {}
-    paths = [p for p in data.get("paths", []) if guard(p)]
+    paths = _paths(data.get("paths"))
     dest_dir = data.get("dest")
     mode = data.get("mode", "copy")
 
@@ -47,14 +56,14 @@ def export_files():
             else:
                 shutil.copy2(src, dest)
         except OSError as exc:
-            print(f"[export] {src}: {exc}")
+            log.warning(f"[export] {src}: {exc}")
     d.commit()
     return jsonify({"success": True, "count": len(paths), "moved": moved})
 
 
 @bp.route("/api/export/zip", methods=["POST"])
 def export_zip():
-    paths = [p for p in (request.json or {}).get("paths", []) if guard(p)]
+    paths = _paths((request.json or {}).get("paths"))
     if not paths:
         return jsonify({"success": False, "error": "Nothing selected."}), 400
 
@@ -72,7 +81,7 @@ def export_zip():
             try:
                 zf.write(p, name)
             except OSError as exc:
-                print(f"[zip] {p}: {exc}")
+                log.warning(f"[zip] {p}: {exc}")
     buf.seek(0)
     return send_file(buf, mimetype="application/zip", as_attachment=True,
                      download_name=f"export-{int(time.time())}.zip")
@@ -83,12 +92,14 @@ def save_edit():
     """Take the canvas the browser rendered and write it out with exactly the
     metadata the user asked for."""
     try:
-        payload = json.loads(request.form.get("payload") or "{}")
+        payload = text.scrub(json.loads(request.form.get("payload") or "{}"))
     except ValueError:
+        return jsonify({"success": False, "error": "Bad request."}), 400
+    if not isinstance(payload, dict):
         return jsonify({"success": False, "error": "Bad request."}), 400
 
     source = payload.get("source_path") or ""
-    if not guard(source):
+    if not _file(source):
         return jsonify({"success": False, "error": "Original file not found."}), 404
 
     blob = request.files.get("image")
@@ -117,6 +128,10 @@ def save_edit():
                 base_exif=base_exif, strip_gps=True)
     except ValueError as exc:
         return jsonify({"success": False, "error": str(exc)}), 400
+    except Image.DecompressionBombError:
+        return jsonify({"success": False, "error": "That image is too large to open."}), 400
+    except UnidentifiedImageError:
+        return jsonify({"success": False, "error": "The image data could not be read."}), 400
     except OSError as exc:
         return jsonify({"success": False, "error": f"Could not write the file: {exc}"}), 500
 

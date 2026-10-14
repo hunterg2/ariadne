@@ -11,7 +11,6 @@ Levels looser than seven bits would need wider neighbourhoods, so they
 keep the pairwise comparison and are limited to a folder.
 """
 
-import os
 
 from ariadne.db import db
 from ariadne.services import tags as tags_svc
@@ -45,7 +44,7 @@ class TooMany(ValueError):
 
 
 def level(key):
-    return next((l for l in LEVELS if l["key"] == key), LEVELS[3])
+    return next((lvl for lvl in LEVELS if lvl["key"] == key), LEVELS[3])
 
 
 def _pool(folder, recursive=False):

@@ -55,7 +55,7 @@ def _remove(path):
     background indexer may be reading it, so give it a moment."""
     from ariadne.services.index import indexer
     indexer.stop()
-    for attempt in range(20):
+    for _ in range(20):
         try:
             os.remove(path)
             return

@@ -9,6 +9,7 @@ import threading
 import time
 
 from ariadne import config
+from ariadne.log import log
 
 _local = threading.local()
 _generation = 0
@@ -81,33 +82,70 @@ BASE_SQL = META_SQL + """
 """
 
 
+# Every handle in use, by the thread holding it. A handle is only ever
+# closed by its own thread: closing one from another thread while that
+# thread is inside a query crashes the process (an access violation in
+# sqlite3, seen during a project switch under load). A request lets go of
+# its handle when it ends (``release`` from the app's teardown) and the
+# workers after each pass, so between requests nothing is open and a switch
+# has nothing to wait for.
+_open = {}                    # connection -> ident of the thread using it
+_open_lock = threading.Lock()
+_switch_lock = threading.RLock()      # held across a project switch
+
+
 def db():
     conn = getattr(_local, "conn", None)
     # a project switch bumps the generation, which retires every open handle
     if conn is not None and getattr(_local, "gen", -1) != _generation:
-        try:
-            conn.close()
-        except sqlite3.Error:
-            pass
+        release()
         conn = None
-        _local.conn = None
     if conn is None:
-        conn = sqlite3.connect(str(config.paths.db_file), check_same_thread=False,
-                               timeout=30)
-        conn.row_factory = sqlite3.Row
-        try:
-            # WAL is a property of the file: once any connection has set it,
-            # a second one racing for the lock can simply carry on
-            conn.execute("PRAGMA journal_mode=WAL")
-        except sqlite3.OperationalError:
-            pass
-        conn.execute("PRAGMA synchronous=NORMAL")
-        # INSERT OR REPLACE must fire delete triggers, or the search index
-        # keeps entries for rows that are gone
-        conn.execute("PRAGMA recursive_triggers=ON")
-        _local.conn = conn
-        _local.gen = _generation
+        # a switch in progress finishes first, or this would open the new
+        # file before its tables exist
+        with _switch_lock:
+            conn = sqlite3.connect(str(config.paths.db_file), check_same_thread=False,
+                                   timeout=30)
+            conn.row_factory = sqlite3.Row
+            try:
+                # WAL is a property of the file: once any connection has set it,
+                # a second one racing for the lock can simply carry on
+                conn.execute("PRAGMA journal_mode=WAL")
+            except sqlite3.OperationalError:
+                pass
+            conn.execute("PRAGMA synchronous=NORMAL")
+            # INSERT OR REPLACE must fire delete triggers, or the search index
+            # keeps entries for rows that are gone
+            conn.execute("PRAGMA recursive_triggers=ON")
+            with _open_lock:
+                _open[conn] = threading.get_ident()
+            _local.conn = conn
+            _local.gen = _generation
     return conn
+
+
+def release():
+    """Close this thread's handle, if it has one. Called when a request ends
+    and after each worker pass, so that no idle thread keeps the file open
+    (Windows will not delete or replace an open file) and no handle is
+    pinned by a thread that is gone."""
+    conn = getattr(_local, "conn", None)
+    if conn is None:
+        return
+    _local.conn = None
+    with _open_lock:
+        _open.pop(conn, None)
+    try:
+        conn.close()
+    except sqlite3.Error:
+        pass
+
+
+def switch_lock():
+    """Held by ``store.use_project`` for the whole switch. ``db`` takes it to
+    open a handle, so a request arriving mid-switch waits for the new
+    library to be ready instead of finding it half built ("no such table")."""
+    return _switch_lock
 
 
 # Full-text search over prompts. An external-content FTS5 table indexed by
@@ -149,13 +187,53 @@ def ensure_fts(d, rebuild=False):
         FTS_ENABLED = True
     except sqlite3.OperationalError as exc:
         FTS_ENABLED = False
-        print(f"[db] prompt search index unavailable ({exc}); searches use LIKE")
+        log.warning(f"[db] prompt search index unavailable ({exc}); searches use LIKE")
 
 
-def retire_connections():
-    """Called on a project switch: every thread reopens against the new file."""
+def retire_connections(wait=3.0):
+    """Called on a project switch: every thread reopens against the new
+    file. This thread's handle is closed here. One another thread is using
+    is interrupted (``sqlite3_interrupt`` is the one call that is safe from
+    another thread: the query fails, the request or pass ends) and that
+    thread closes it itself, which is waited for, up to ``wait`` seconds,
+    so the old database is let go of before the caller replaces or deletes
+    it. A handle whose thread is gone is closed here, nothing else can be
+    using it. Returns whether every old handle was closed in time."""
     global _generation
-    _generation += 1
+    me = threading.get_ident()
+    alive = {t.ident for t in threading.enumerate()}
+    with _open_lock:
+        _generation += 1
+        busy, orphans = [], []
+        for conn, ident in list(_open.items()):
+            if ident == me:
+                continue
+            if ident in alive:
+                busy.append(conn)
+            else:
+                orphans.append(conn)
+                del _open[conn]
+    release()
+    for conn in orphans:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+    for conn in busy:
+        try:
+            conn.interrupt()
+        except sqlite3.Error:
+            pass
+    deadline = time.time() + wait
+    while busy:
+        with _open_lock:
+            busy = [c for c in busy if c in _open]
+        if not busy or time.time() >= deadline:
+            break
+        time.sleep(0.01)
+    if busy:
+        log.warning(f"[db] {len(busy)} handle(s) to the old library still open after the switch")
+    return not busy
 
 
 def init_db():
@@ -173,7 +251,7 @@ def init_db():
         d.execute("UPDATE images SET indexed_at=NULL") if _has_table(d, "images") else None
         d.commit()
         kv_set("meta_cache_version", config.META_CACHE_VERSION)
-        print("[cache] metadata cache rebuilt for the new extractor")
+        log.info("[cache] metadata cache rebuilt for the new extractor")
         rebuilt = True
     # dropping meta took its triggers with it; the index must start over too
     ensure_fts(d, rebuild=rebuilt)
@@ -219,5 +297,5 @@ def backup_db(keep=config.BACKUPS_KEPT):
                 pass
         return dest
     except (sqlite3.Error, OSError) as exc:
-        print(f"[backup] skipped: {exc}")
+        log.warning(f"[backup] skipped: {exc}")
         return None

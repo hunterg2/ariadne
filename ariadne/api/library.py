@@ -16,6 +16,19 @@ from ariadne.services.thumbs import build_thumb
 bp = Blueprint("library", __name__)
 
 
+def _text(value):
+    return value.strip() if isinstance(value, str) else ""
+
+
+def thumb_quality():
+    """``settings.thumb_quality`` inside WebP's 1..100, the default for
+    anything that is not a number."""
+    try:
+        return max(1, min(100, int(store.load_settings().get("thumb_quality", config.THUMB_QUALITY))))
+    except (TypeError, ValueError):
+        return config.THUMB_QUALITY
+
+
 # --------------------------------------------------------------------------
 # sidebar history
 # --------------------------------------------------------------------------
@@ -28,11 +41,16 @@ def handle_history():
 
     if request.method == "POST":
         data = request.json or {}
-        folders = list(data.get("folders", []))
-        if data.get("folder"):
+        folders = [f for f in (data.get("folders") if isinstance(data.get("folders"), list) else [])
+                   if isinstance(f, str)]
+        if isinstance(data.get("folder"), str) and data["folder"]:
             folders.append(data["folder"])
         for new_folder in folders:
-            if (new_folder and os.path.isdir(new_folder)
+            if not new_folder.strip():
+                continue
+            # "x\" and "x\." are x; the index spells its rows like the list
+            new_folder = os.path.normpath(new_folder)
+            if (os.path.isabs(new_folder) and os.path.isdir(new_folder)
                     and not sidebar.folder_exists(history, new_folder)):
                 history.insert(0, {
                     "type": "folder", "path": new_folder, "alias": "", "status": "",
@@ -46,21 +64,55 @@ def handle_history():
     return jsonify({"success": True, "history": history})
 
 
+def _spelled_as_before(history, previous):
+    """A folder already in the list keeps its spelling: the index spells its
+    rows like the list, and a sync is not where a folder is renamed (the
+    repath route is, and it respells the rows)."""
+    known = {}
+
+    def collect(items):
+        for it in items:
+            if it.get("type") == "folder":
+                known[os.path.normcase(it["path"])] = it["path"]
+            elif it.get("type") == "group":
+                collect(it.get("items", []))
+
+    def apply(items):
+        for it in items:
+            if it.get("type") == "folder":
+                it["path"] = known.get(os.path.normcase(it["path"]), it["path"])
+            elif it.get("type") == "group":
+                apply(it.get("items", []))
+
+    collect(previous)
+    apply(history)
+    return history
+
+
 @bp.route("/api/history/sync", methods=["POST"])
 def sync_history():
-    store.save_history((request.json or {}).get("history", []))
-    return jsonify({"success": True})
+    history = (request.json or {}).get("history", [])
+    if not isinstance(history, list):
+        return jsonify({"success": False, "error": "The sidebar list must be a list."}), 400
+    # entries that are not folders or groups are dropped, so is a second
+    # spelling of a folder, and a folder already listed keeps its spelling
+    history = _spelled_as_before(store.clean_history(history), store.load_history())
+    store.save_history(history)
+    return jsonify({"success": True, "history": history})
 
 
 @bp.route("/api/history/update", methods=["POST"])
 def update_history():
     data = request.json or {}
     history = store.load_history()
-    sidebar.find_and_update(history, data.get("path"), data.get("action"), data.get("value"))
+    found = sidebar.find_and_update(history, data.get("path"), data.get("action"), data.get("value"))
     history, _ = sidebar.update_auto_groups(history, store.load_settings())
     store.save_history(history)
-    if data.get("action") == "recursive" and data.get("value") and data.get("path"):
-        # the subfolders have never been listed: do that in the background now
+    if found and data.get("action") == "recursive" and data.get("value"):
+        # the subfolders have never been listed: do that in the background
+        # now. Only for a folder in the list: an indexed file is a readable
+        # file (safety.is_path_allowed trusts the index), so this must not
+        # index whatever path it is handed.
         index.indexer.request(data["path"], recursive=True)
     return jsonify({"success": True, "history": history})
 
@@ -106,11 +158,12 @@ def repath_folder():
     """Point a saved folder at its new location and carry every rating, tag and
     trash record across with it."""
     data = request.json or {}
-    old = (data.get("old") or "").strip()
-    new = (data.get("new") or "").strip().rstrip("/\\")
+    old = _text(data.get("old"))
+    new = _text(data.get("new"))
 
     if not old or not new:
         return jsonify({"success": False, "error": "Give both the old and the new path."}), 400
+    new = os.path.normpath(new)      # typed by hand, "x\..\pics" would otherwise be stored as such
     if not os.path.isdir(new):
         return jsonify({"success": False,
                         "error": "That folder does not exist. Check the path and try again."}), 400
@@ -133,7 +186,7 @@ def repath_folder():
 
     d = db()
     moved = 0
-    for table in ("tags", "meta", "ratings", "collection_items", "post_images"):
+    for table in ("tags", "meta", "ratings", "collection_items"):
         for row in d.execute(f"SELECT path FROM {table}").fetchall():
             p = row["path"]
             if not under(p, old):
@@ -175,24 +228,33 @@ def check_folder():
     return jsonify({"success": True})
 
 
+def _image_type(path):
+    """The type to serve a library file as, or None for anything that is
+    not one of the image formats the index takes. A folder in the list can
+    hold an .html or .svg as well, and served from this origin that would
+    be a page with the app's rights, able to call every route."""
+    return config.IMAGE_TYPES.get(os.path.splitext(path or "")[1].lower())
+
+
 @bp.route("/thumb")
 def serve_thumb():
     path = request.args.get("path")
-    if not guard(path):
+    mimetype = _image_type(path)
+    if not mimetype or not guard(path) or not os.path.isfile(path):
         return "Not found", 404
-    quality = int(store.load_settings().get("thumb_quality", config.THUMB_QUALITY))
-    dest = build_thumb(path, quality)
+    dest = build_thumb(path, thumb_quality())
     if dest and dest.exists():
         return send_file(dest, mimetype="image/webp", max_age=31536000)
-    return send_file(path, max_age=3600)  # fall back to the original
+    return send_file(path, mimetype=mimetype, max_age=3600)  # fall back to the original
 
 
 @bp.route("/image")
 def serve_image():
     path = request.args.get("path")
-    if not guard(path):
+    mimetype = _image_type(path)
+    if not mimetype or not guard(path) or not os.path.isfile(path):
         return "Not found", 404
-    return send_file(path, max_age=3600, conditional=True)
+    return send_file(path, mimetype=mimetype, max_age=3600, conditional=True)
 
 
 @bp.route("/api/prompt")
@@ -205,7 +267,7 @@ def get_prompt():
             info = img.info or {}
             raw = info.get("workflow") or info.get("prompt") or info.get("parameters") or "{}"
             return jsonify({"raw_workflow": raw})
-    except (OSError, ValueError):
+    except (OSError, ValueError, Image.DecompressionBombError):
         return jsonify({"raw_workflow": "{}"})
 
 

@@ -120,7 +120,10 @@ stays in step with the disk.
 **On a phone.** Start with `--lan`, set a PIN, and open the address on the
 phone: the sections sit along the bottom, the folder list is behind the
 Folders button, the info panel is a sheet, and a swipe moves through the
-viewer. Rating with the star row on each tile works by touch.
+viewer. Rating with the star row on each tile works by touch. "Add to Home
+Screen" in the phone's browser menu installs it as its own app with its own
+icon, opening full screen without the address bar (Android: the three-dot
+menu; iPhone: Share, then Add to Home Screen).
 
 **Rate, tag, collect.** Click a tile or move with the arrow keys, then press
 `1` to `5` for stars, `0` to clear, `X` to reject, `T` to tag. `F` opens
@@ -160,10 +163,12 @@ Everything is next to `app.py` and all of it is ignored by git:
 | `settings.json` | Preferences, hotkeys, watched folders, tagger and editor defaults. |
 | `history.json` | The sidebar: saved folders, groups, pins and order. |
 | `projects.json` and `projects/<id>/` | The list of libraries and the data for every library other than the default one. |
+| `ariadne.log` (+ `.1`, `.2`, `.3`) | Everything the app reports: starts, migrations, what a scan or a save ran into. 1 MB, three older copies kept. Settings, About has "Copy diagnostics" and "Report a bug". |
 
-To back up, copy `organizer.db` while the app is stopped, or use Tools,
-Export ratings and tags for a portable JSON of the parts that cannot be
-recomputed. To reset, stop the app and delete the database files and
+To back up, use Settings, Backup, "Download a backup": one zip with the
+database, the key file, the settings and the sidebar, with a note on how to
+restore. Tools, Export ratings and tags gives a portable JSON of the parts
+that cannot be recomputed. To reset, stop the app and delete the database files and
 `cache/`; delete the JSON files and the key as well for a completely fresh
 start. Your image folders are untouched by any of this.
 
@@ -181,6 +186,15 @@ loved become 3 and 5 stars, and the old JSON files are kept as `*.v1.bak`.
   PIN set they are turned away. Ten wrong guesses lock a device out for
   fifteen minutes. It is a PIN over plain HTTP, meant for a home network,
   not the open internet.
+- A request from this computer has to be addressed to it (`localhost`,
+  `127.0.0.1` or `::1`). A web page that points a domain of its own at
+  127.0.0.1 and calls Ariadne from your browser is turned away by that
+  check, and so is any request a page on another site makes your browser
+  send. A hosts-file alias of your own goes in `ARIADNE_TRUSTED_HOSTS`
+  (comma separated).
+- Settings, About asks GitHub once a day whether a newer release is out,
+  and only says so; nothing is downloaded or installed by itself. The
+  checkbox there turns it off.
 - Nothing is uploaded anywhere unless you choose a hosted vision model for
   tag suggestions; the local prompt-based tagger and Ollama keep everything
   on your machine.
@@ -196,6 +210,7 @@ py -3 app.py --no-browser --reload       # backend, serving the built frontend
 cd web && npm install && npm run dev     # frontend dev server, proxies /api
 cd web && npm run check && npm run build # type-check, then write web/dist
 py -3 -m pytest -q                       # backend tests
+py -3 -m ruff check .                    # lint, same rules as CI (ruff.toml)
 cd web && npm run e2e                    # browser tests (Playwright, see below)
 py -3 scripts/bench_index.py 200000      # time the index on a synthetic library
 py -3 scripts/make_sample_library.py DIR # a folder of sample PNGs with prompts
@@ -249,6 +264,12 @@ metadata"; a folder's menu has "Rescan".
 
 **A folder shows as broken.** The drive letter or path changed. Use "Fix
 path" on the entry rather than adding it again, so the records follow.
+
+**Something else is wrong.** Settings, About, "Report a bug" takes what
+went wrong and what you did just before, adds the diagnostics (versions,
+settings, folder paths, the end of the log; never a key), shows you the
+text, and opens it as a new issue on GitHub for you to submit. Copy and
+Download give the same text if you would rather send it another way.
 
 ## Status
 

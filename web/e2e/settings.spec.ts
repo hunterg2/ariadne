@@ -31,4 +31,30 @@ test.describe("settings", () => {
     await expect(page.getByText("No PIN yet.")).toBeVisible();
     expect((await (await request.get("/api/auth/status")).json()).has_pin).toBe(false);
   });
+
+  test("drafts a bug report as a prefilled GitHub issue", async ({ page }) => {
+    await page.goto("/#/settings");
+    // the new tab would be github.com; catch the address instead of opening it
+    await page.evaluate(() => {
+      (window as any).__opened = [] as string[];
+      window.open = ((url: string | URL) => { (window as any).__opened.push(String(url)); return window; }) as typeof window.open;
+    });
+    await page.getByRole("button", { name: "Report a bug" }).click();
+    const sheet = page.locator(".sheet");
+    await sheet.locator("#bug-summary").fill("The grid froze after a sort");
+    await sheet.locator("#bug-steps").fill("Sorted by name, then scrolled");
+    const preview = sheet.locator("#bug-preview");
+    await expect(preview).toContainText("The grid froze after a sort");
+    await expect(preview).toContainText("Sorted by name, then scrolled");
+    await expect(preview).toContainText(/Images indexed: \d+/);
+    await sheet.getByRole("button", { name: "Open on GitHub" }).click();
+    const opened = await page.evaluate(() => (window as any).__opened as string[]);
+    expect(opened).toHaveLength(1);
+    const url = new URL(opened[0]);
+    expect(url.origin + url.pathname).toBe("https://github.com/hunterg2/ariadne/issues/new");
+    expect(url.searchParams.get("title")).toBe("The grid froze after a sort");
+    expect(url.searchParams.get("body")).toContain("Sorted by name, then scrolled");
+    expect(url.searchParams.get("labels")).toBe("bug");
+    await expect(sheet).toHaveCount(0);                                   // the dialog closed
+  });
 });

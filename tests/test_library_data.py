@@ -87,6 +87,7 @@ def test_importer_copies_legacy_categories_once(tmp_path, library):
     """A library from the old build: liked / loved rows become 3 and 5 stars
     when migration m0003 runs, and the table is dropped afterwards."""
     import sqlite3
+
     from ariadne import create_app
     data_dir = tmp_path / "legacy"
     data_dir.mkdir()

@@ -6,6 +6,7 @@ import time
 
 from ariadne import config, store
 from ariadne.db import db, kv_get, kv_set
+from ariadne.log import log
 
 
 def library_payload():
@@ -40,7 +41,7 @@ def migrate_from_v1():
     if kv_get("schema_version") == str(config.SCHEMA_VERSION):
         return
 
-    print("[migrate] upgrading data from v1 ...")
+    log.info("[migrate] upgrading data from v1 ...")
     d = db()
     moved = []
 
@@ -53,7 +54,7 @@ def migrate_from_v1():
         if rows:
             d.executemany("INSERT OR IGNORE INTO ratings (path, stars, rejected, label, updated) "
                           "VALUES (?,?,0,NULL,?)", rows)
-        print(f"[migrate]   ratings: {len(rows)}")
+        log.info(f"[migrate]   ratings: {len(rows)}")
         moved.append(config.LEGACY_CATEGORIES_FILE)
 
     # 2. tags.json -> tags table
@@ -71,7 +72,7 @@ def migrate_from_v1():
                     rows.append((p, t))
         if rows:
             d.executemany("INSERT OR REPLACE INTO tags VALUES (?,?)", rows)
-        print(f"[migrate]   tag links: {len(rows)}")
+        log.info(f"[migrate]   tag links: {len(rows)}")
         moved.append(config.LEGACY_TAGS_FILE)
 
     d.commit()
@@ -108,4 +109,4 @@ def migrate_from_v1():
     store.save_history(history)
 
     kv_set("schema_version", config.SCHEMA_VERSION)
-    print("[migrate] done. old files kept as *.v1.bak")
+    log.info("[migrate] done. old files kept as *.v1.bak")

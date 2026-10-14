@@ -16,11 +16,23 @@ from ariadne.services import tags as tags_svc
 bp = Blueprint("images", __name__)
 
 
+BIG = 2 ** 62        # SQLite integers end at 2**63; anything near it is a typo
+
+
 def _int(value, default=None):
     try:
-        return int(value) if value not in (None, "") else default
-    except ValueError:
+        out = int(value) if value not in (None, "") else default
+    except (TypeError, ValueError):
         return default
+    return max(-BIG, min(BIG, out)) if isinstance(out, int) else out
+
+
+def _text(value):
+    return value if isinstance(value, str) else ""
+
+
+def _strings(value):
+    return [x for x in value if isinstance(x, str)] if isinstance(value, list) else []
 
 
 def _bool(value):
@@ -30,7 +42,7 @@ def _bool(value):
 
 
 def _allowed_paths(paths):
-    return [p for p in (paths or []) if isinstance(p, str) and is_path_allowed(p)]
+    return [p for p in _strings(paths) if is_path_allowed(p)]
 
 
 # --------------------------------------------------------------------------
@@ -84,7 +96,7 @@ def scan():
     indexer. ``wait=1`` enriches everything before answering (small folders,
     tests)."""
     body = request.json or {}
-    folder = body.get("folder") or ""
+    folder = _text(body.get("folder"))
     if not folder or not os.path.isdir(folder):
         return jsonify({"success": False, "error": "Folder not found."}), 404
     if not is_path_allowed(folder):
@@ -166,7 +178,7 @@ def prompts():
 def facets():
     """Distinct values of one metadata field, for the search helper."""
     field = request.args.get("field") or "model"
-    q = (request.args.get("q") or "").strip()
+    q = (request.args.get("q") or "").strip()[:200]      # a LIKE pattern has a size limit
     limit = max(1, min(50, _int(request.args.get("limit"), 20)))
     return jsonify({"success": True, "field": field, "values": index.facets(field, q, limit)})
 
@@ -176,8 +188,8 @@ def summaries():
     """Counts for many folders in one call, for the sidebar. ``recursive``
     names the folders whose subfolders count too."""
     body = request.json or {}
-    folders = [f for f in (body.get("folders") or []) if isinstance(f, str) and is_path_allowed(f)]
-    recursive = [f for f in (body.get("recursive") or []) if isinstance(f, str)]
+    folders = [f for f in _strings(body.get("folders")) if is_path_allowed(f)]
+    recursive = _strings(body.get("recursive"))
     return jsonify({"success": True, "summaries": index.folder_summaries(folders, recursive)})
 
 
@@ -191,12 +203,15 @@ def set_ratings():
     paths = _allowed_paths(body.get("paths"))
     if not paths:
         return jsonify({"success": False, "error": "No images."}), 400
-    if "stars" in body:
-        ratings_svc.set_stars(paths, body["stars"])
-    if "rejected" in body:
-        ratings_svc.set_rejected(paths, body["rejected"])
-    if "label" in body:
-        ratings_svc.set_label(paths, body["label"])
+    try:
+        if "stars" in body:
+            ratings_svc.set_stars(paths, body["stars"])
+        if "rejected" in body:
+            ratings_svc.set_rejected(paths, body["rejected"])
+        if "label" in body:
+            ratings_svc.set_label(paths, _text(body["label"]))
+    except (TypeError, ValueError):
+        return jsonify({"success": False, "error": "Stars must be a number from 0 to 5."}), 400
     return jsonify({"success": True, "ratings": ratings_svc.get_many(paths)})
 
 
@@ -250,8 +265,8 @@ def create_collection():
     body = request.json or {}
     try:
         cid = collections_svc.create_collection(
-            body.get("name"), body.get("kind", "manual"), body.get("query", ""),
-            body.get("icon", ""), body.get("color", ""))
+            _text(body.get("name")), body.get("kind", "manual"), _text(body.get("query")),
+            _text(body.get("icon")), _text(body.get("color")))
     except ValueError as exc:
         return jsonify({"success": False, "error": str(exc)}), 400
     if body.get("paths"):
@@ -263,9 +278,11 @@ def create_collection():
 @bp.route("/api/collections/<cid>", methods=["PATCH"])
 def update_collection(cid):
     body = request.json or {}
+    given = {k: body.get(k) for k in ("name", "query", "icon", "color")}
+    order = body.get("sort_order")
     ok = collections_svc.update_collection(
-        cid, name=body.get("name"), query=body.get("query"), icon=body.get("icon"),
-        color=body.get("color"), sort_order=body.get("sort_order"))
+        cid, **{k: (v if isinstance(v, str) else None) for k, v in given.items()},
+        sort_order=order if isinstance(order, int) and not isinstance(order, bool) else None)
     return jsonify({"success": ok, "collection": collections_svc.get_collection(cid)})
 
 

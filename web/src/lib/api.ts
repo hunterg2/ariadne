@@ -235,11 +235,29 @@ export const libraryStats = () => get<{ counts: Record<string, number>; backups:
 export const importLibrary = (data: unknown, mode: "merge" | "replace") =>
   post<{ ratings: number; tag_links: number; missing_files: number }>("/api/library/import", { data, mode });
 export interface SystemInfo {
-  platform: string; tray_available: boolean; startup_supported: boolean; startup_enabled: boolean;
+  version: string; platform: string; tray_available: boolean; startup_supported: boolean; startup_enabled: boolean;
   startup_path: string; launcher: string; host: string; port: number; urls: string[];
+  log_path: string;
+  /* what the backup zip would hold (services/backup) */
+  backup: { key_exists: boolean; key_path: string; data_dir: string; files: string[]; bytes: number };
 }
 export const systemInfo = () => get<SystemInfo>("/api/system");
 export const setStartup = (on: boolean) => post<SystemInfo & { success: boolean; message: string }>("/api/system/startup", {}, on ? "POST" : "DELETE");
+/* the text Settings copies for a bug report; the log itself is at /api/system/log */
+export const diagnostics = () => get<{ text: string; log_path: string }>("/api/system/diagnostics");
+/* a bug report drafted from what the user typed: the prefilled GitHub issue
+   (title, body, url) and the whole report as text; ?download=1 is the file */
+export interface BugReport { title: string; body: string; url: string; text: string; cut: boolean; repo: string }
+const reportQuery = (summary: string, steps: string, diagnostics: boolean) =>
+  `summary=${enc(summary)}&steps=${enc(steps)}&diagnostics=${diagnostics ? 1 : 0}`;
+export const bugReport = (summary: string, steps: string, diagnostics: boolean) =>
+  get<BugReport>("/api/system/report?" + reportQuery(summary, steps, diagnostics));
+export const bugReportDownloadUrl = (summary: string, steps: string, diagnostics: boolean) =>
+  "/api/system/report?download=1&" + reportQuery(summary, steps, diagnostics);
+/* the update notice: the last look at GitHub's newest release */
+export interface UpdateState { current: string; repo: string; enabled: boolean; checked_at: number | null; latest: string; url: string; error: string; newer: boolean }
+export const updateState = () => get<UpdateState>("/api/updates");
+export const checkUpdates = () => post<UpdateState>("/api/updates/check");
 /* the PIN other devices enter; the computer itself never needs it */
 export interface AuthStatus { exposed: boolean; required: boolean; has_pin: boolean; authenticated: boolean; locked: boolean }
 export const authStatus = () => get<AuthStatus>("/api/auth/status");

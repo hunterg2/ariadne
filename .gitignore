@@ -30,9 +30,11 @@ env/
 .DS_Store
 Thumbs.db
 
-# the local key that signs the PIN cookie for other devices, and frontend
+# the local key that signs the PIN cookie for other devices, the log
+# (ariadne/log.py rotates ariadne.log, ariadne.log.1, ...) and frontend
 # tooling
 ariadne.key
+ariadne.log*
 web/node_modules/
 web/.vite/
 .pytest_cache/

@@ -14,6 +14,9 @@ The zip holds one folder:
 The launchers pass --app-dir data, so an upgrade is replacing app/ and
 python/ and nothing else. Needs a network connection to fetch the
 embeddable Python and the packages; both are cached under build/cache.
+The packages are held to the versions in requirements.lock (written by
+scripts/lock_requirements.py), so a rebuild of the same tag gets the same
+packages and a newer one is a deliberate commit.
 """
 
 import argparse
@@ -66,11 +69,24 @@ def files_to_ship(root=ROOT):
     return out
 
 
+def pip_args(with_optional=True, root=ROOT):
+    """What pip installs into the embedded Python: the requirements, the
+    optional packages unless told otherwise, held to requirements.lock as
+    a constraints file when it exists (a constraint pins without
+    installing, so --no-optional still leaves pystray out)."""
+    root = Path(root)
+    args = ["-r", str(root / "requirements.txt")] + (list(OPTIONAL) if with_optional else [])
+    lock = root / "requirements.lock"
+    if lock.is_file():
+        args += ["-c", str(lock)]
+    return args
+
+
 def patch_pth(pth_path, app_rel="..\\app"):
     """The embeddable Python ignores site-packages until ``import site`` is
     uncommented; the app folder is added so the code imports wherever the
     launcher is run from."""
-    lines = [l.rstrip("\r\n") for l in Path(pth_path).read_text(encoding="utf-8").splitlines()]
+    lines = [line.rstrip("\r\n") for line in Path(pth_path).read_text(encoding="utf-8").splitlines()]
     out = []
     for line in lines:
         if line.strip() == "#import site":
@@ -138,9 +154,8 @@ def build(out_dir=ROOT / "build", python_version="3.12.7", with_optional=True, s
     if not skip_pip:
         get_pip = fetch(GET_PIP_URL, cache / "get-pip.py")
         subprocess.run([str(python), str(get_pip), "--no-warn-script-location", "-q"], check=True)
-        packages = ["-r", str(ROOT / "requirements.txt")] + (OPTIONAL if with_optional else [])
-        subprocess.run([str(python), "-m", "pip", "install", "--no-warn-script-location", "-q", *packages],
-                       check=True)
+        subprocess.run([str(python), "-m", "pip", "install", "--no-warn-script-location", "-q",
+                        *pip_args(with_optional)], check=True)
         subprocess.run([str(python), "-c", "import flask, PIL"], check=True)
 
     (stage / "Ariadne.bat").write_text(launcher_text(False), encoding="ascii")

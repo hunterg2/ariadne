@@ -44,7 +44,7 @@ def source_exif(path):
     try:
         with Image.open(path) as probe:
             return probe.getexif()
-    except (OSError, ValueError):
+    except (OSError, ValueError, Image.DecompressionBombError):
         return None
 
 

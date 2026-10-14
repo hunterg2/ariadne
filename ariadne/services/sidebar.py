@@ -92,8 +92,12 @@ def update_auto_groups(history, settings):
 
 
 def folder_exists(history, path):
+    """Is this folder in the list, under any spelling (case, slashes, a
+    trailing separator)?"""
+    want = os.path.normcase(os.path.normpath(path))
     for item in history:
-        if item.get("type") == "folder" and item.get("path") == path:
+        if (item.get("type") == "folder" and isinstance(item.get("path"), str)
+                and os.path.normcase(os.path.normpath(item["path"])) == want):
             return True
         if item.get("type") == "group" and folder_exists(item.get("items", []), path):
             return True

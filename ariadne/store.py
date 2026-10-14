@@ -5,12 +5,13 @@ which set of files is live.
 
 import hashlib
 import json
+import math
 import os
 import time
 from pathlib import Path
 
 from ariadne import config, db
-
+from ariadne.log import log
 
 # --------------------------------------------------------------------------
 # json files
@@ -26,9 +27,9 @@ def load_json_file(filepath, default_type=dict):
             with open(p, "r", encoding="utf-8") as f:
                 return json.load(f)
         except ValueError as exc:
-            print(f"[json] {p.name} is not valid JSON and was ignored: {exc}")
+            log.warning(f"[json] {p.name} is not valid JSON and was ignored: {exc}")
         except OSError as exc:
-            print(f"[json] {p.name} could not be read: {exc}")
+            log.warning(f"[json] {p.name} could not be read: {exc}")
     return default_type()
 
 
@@ -38,16 +39,71 @@ def save_json_file(filepath, data):
     tmp = p.with_suffix(p.suffix + ".tmp")
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
-    os.replace(tmp, p)
+    replace_file(tmp, p)
+
+
+def replace_file(tmp, dest, tries=20, pause=0.05):
+    """``os.replace`` with patience. On Windows a file another thread has
+    open for reading at that instant (the indexer loading settings) cannot
+    be replaced: the rename fails with "access is denied" rather than
+    waiting, which CI saw as a failed settings save. A read takes a
+    millisecond, so a few short retries cover it."""
+    for attempt in range(tries):
+        try:
+            os.replace(tmp, dest)
+            return
+        except PermissionError:
+            if attempt == tries - 1:
+                raise
+            time.sleep(pause)
 
 
 def _merge_defaults(data, defaults):
+    """``data`` with every default key present and in the default's shape.
+    Keys the defaults do not know pass through untouched."""
     for k, v in defaults.items():
         if k not in data:
             data[k] = json.loads(json.dumps(v))
-        elif isinstance(v, dict) and isinstance(data[k], dict):
-            _merge_defaults(data[k], v)
+        else:
+            data[k] = _coerce(data[k], v)
     return data
+
+
+def _coerce(value, default):
+    """``value`` in the type of ``default``. A hand-edited settings.json or
+    an odd client used to be able to put a string where a list belongs, and
+    every later request then failed on it; a wrong type now becomes the
+    default, and a number written as text becomes the number."""
+    if isinstance(default, bool):
+        if isinstance(value, bool):
+            return value
+        return bool(value) if isinstance(value, (int, float)) else default
+    if isinstance(default, int):
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value) if math.isfinite(value) else default
+        if isinstance(value, str):
+            try:
+                return int(float(value))
+            except (ValueError, OverflowError):
+                return default
+        return default
+    if isinstance(default, str):
+        if isinstance(value, str):
+            return value
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return str(value)
+        return default
+    if isinstance(default, list):
+        return value if isinstance(value, list) else json.loads(json.dumps(default))
+    if isinstance(default, dict):
+        if isinstance(value, dict):
+            return _merge_defaults(value, default)
+        return json.loads(json.dumps(default))
+    return value
 
 
 # --------------------------------------------------------------------------
@@ -59,6 +115,19 @@ def normalise_settings(settings):
     just the first entry in a list of auto-updating folders."""
     changed = False
     autos = settings.setdefault("auto_folders", [])
+    if not isinstance(autos, list):
+        autos = settings["auto_folders"] = []
+        changed = True
+    # an entry that is not {path: ...} cannot be watched or be a root
+    kept = [a for a in autos if isinstance(a, dict) and isinstance(a.get("path"), (str, type(None)))]
+    if len(kept) != len(autos):
+        autos[:] = kept
+        changed = True
+    roots = settings.get("extra_roots")
+    clean_roots = [r for r in (roots if isinstance(roots, list) else []) if isinstance(r, str) and r.strip()]
+    if clean_roots != roots:
+        settings["extra_roots"] = clean_roots
+        changed = True
     legacy = (settings.get("comfy_path") or "").strip()
     if legacy:
         if not any((a.get("path") or "") == legacy for a in autos):
@@ -110,19 +179,41 @@ def save_settings(settings):
 # --------------------------------------------------------------------------
 
 def load_history():
-    data = load_json_file(config.paths.history_file, list)
+    return clean_history(load_json_file(config.paths.history_file, list))
+
+
+def clean_history(data, seen=None):
+    """The sidebar list with anything that cannot be a sidebar entry
+    dropped: a folder needs a path that is text, a group a list of items.
+    The list is what decides which folders may be read (safety.py), so a
+    bad sync or a hand edit must not be able to break every request. A
+    folder's path is normalised and a second spelling of a folder already
+    in the list is dropped: the index spells its rows like the list does,
+    so ``C:\\Pics`` and ``c:/pics/`` both listed meant every file twice."""
     history = []
-    for item in data:
+    seen = set() if seen is None else seen
+    for item in (data if isinstance(data, list) else []):
         if isinstance(item, str):
-            history.append({"type": "folder", "path": item, "alias": "", "status": ""})
-        elif isinstance(item, dict):
-            item.setdefault("type", "folder")
-            history.append(item)
+            item = {"type": "folder", "path": item, "alias": "", "status": ""}
+        if not isinstance(item, dict):
+            continue
+        item.setdefault("type", "folder")
+        if item["type"] == "folder":
+            if not isinstance(item.get("path"), str) or not item["path"].strip():
+                continue
+            item["path"] = os.path.normpath(item["path"])
+            key = os.path.normcase(item["path"])
+            if key in seen:
+                continue
+            seen.add(key)
+        elif item["type"] == "group":
+            item["items"] = clean_history(item.get("items"), seen)
+        history.append(item)
     return history
 
 
 def save_history(history):
-    save_json_file(config.paths.history_file, history)
+    save_json_file(config.paths.history_file, clean_history(history))
     config.bump_roots()
 
 
@@ -150,12 +241,22 @@ def save_projects(data):
 
 
 def use_project(project_id):
-    """Point every path at this project and retire the old database handles."""
-    from ariadne import migrations
+    """Point every path at this project and retire the old database handles.
 
-    new_paths = config.Paths(config.project_dir(project_id))
-    new_paths.ensure()
-    config.set_paths(new_paths)
-    db.retire_connections()
-    db.init_db()
-    migrations.apply()
+    The indexer thread is stopped first: it reads ``config.paths`` on every
+    database call, so a scan still running across the switch would write
+    the old library's files into the new library's database, and hold that
+    file locked while the migrations try to create it (seen in CI as
+    "database is locked"). The next scan request starts it again."""
+    from ariadne import migrations
+    from ariadne.services.index import indexer
+
+    indexer.stop()
+    # a request that arrives meanwhile opens its handle once this is done
+    with db.switch_lock():
+        new_paths = config.Paths(config.project_dir(project_id))
+        new_paths.ensure()
+        config.set_paths(new_paths)
+        db.retire_connections()
+        db.init_db()
+        migrations.apply()

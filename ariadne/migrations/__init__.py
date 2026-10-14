@@ -10,6 +10,7 @@ import importlib
 import pkgutil
 
 from ariadne.db import backup_db, db, kv_get, kv_set
+from ariadne.log import log
 
 
 def available():
@@ -45,5 +46,5 @@ def apply():
         module.up(d)
         d.commit()
         kv_set("db_version", version_of(name))
-        print(f"[migrate] applied {name}")
+        log.info(f"[migrate] applied {name}")
     return pending

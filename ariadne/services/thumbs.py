@@ -11,6 +11,7 @@ from PIL import Image
 
 from ariadne import config, metadata
 from ariadne.db import db
+from ariadne.log import log
 
 _pool = ThreadPoolExecutor(max_workers=max(2, (os.cpu_count() or 4) // 2))
 
@@ -52,8 +53,8 @@ def build_thumb(path, quality=config.THUMB_QUALITY):
                 os.remove(tmp)
         remember_thumb(dest, path, st)
         return dest
-    except (OSError, ValueError) as exc:
-        print(f"[thumb] {path}: {exc}")
+    except (OSError, ValueError, Image.DecompressionBombError) as exc:
+        log.warning(f"[thumb] {path}: {exc}")
         return None
 
 

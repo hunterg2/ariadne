@@ -57,7 +57,8 @@ import sys
 from PIL import Image, ImageOps
 from PIL.PngImagePlugin import PngInfo
 
-Image.MAX_IMAGE_PIXELS = None
+# the pixel ceiling is set once, in ariadne/__init__.py (this line used to
+# switch it off again after that module had raised it)
 
 # --------------------------------------------------------------------------
 # vocabulary
@@ -251,15 +252,15 @@ def graph_from_workflow(wf):
     links = {}
     raw_links = wf.get("links") or []
     if isinstance(raw_links, list):
-        for l in raw_links:
-            if isinstance(l, (list, tuple)) and len(l) >= 3:
-                links[l[0]] = (str(l[1]), l[2])
-            elif isinstance(l, dict) and l.get("id") is not None:
-                links[l["id"]] = (str(l.get("origin_id")), l.get("origin_slot") or 0)
+        for link in raw_links:
+            if isinstance(link, (list, tuple)) and len(link) >= 3:
+                links[link[0]] = (str(link[1]), link[2])
+            elif isinstance(link, dict) and link.get("id") is not None:
+                links[link["id"]] = (str(link.get("origin_id")), link.get("origin_slot") or 0)
     elif isinstance(raw_links, dict):
-        for lid, l in raw_links.items():
-            if isinstance(l, dict):
-                links[lid] = (str(l.get("origin_id")), l.get("origin_slot") or 0)
+        for lid, link in raw_links.items():
+            if isinstance(link, dict):
+                links[lid] = (str(link.get("origin_id")), link.get("origin_slot") or 0)
 
     graph = {}
     for node in nodes:
@@ -472,7 +473,7 @@ def _prompt_via(graph, sampler_id, link_keys, prefer, avoid, widget_pick, origin
 def _looks_like_list(text, node):
     """Several complete prompts stacked in one box, rather than one prompt
     that happens to contain newlines."""
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
     if len(lines) < 2:
         return []
     if node:
@@ -483,7 +484,7 @@ def _looks_like_list(text, node):
             return lines
     # no naming help: only call it a list if the lines really read as separate
     # prompts, which keeps ordinary two-line prompts intact
-    if len(lines) >= 4 and all(len(l) > 15 for l in lines):
+    if len(lines) >= 4 and all(len(line) > 15 for line in lines):
         return lines
     return []
 
@@ -873,7 +874,7 @@ def extract(path, want_hash=True):
             meta["width"], meta["height"] = shown.size
             if want_hash:
                 meta["phash"] = dhash(shown)
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, Image.DecompressionBombError) as exc:
         meta["source"] = f"unreadable ({exc.__class__.__name__})"
         return meta
 
@@ -939,7 +940,7 @@ def extract(path, want_hash=True):
 
     # 5. deep scan of anything left
     if not (meta["prompt"] and meta["steps"] and meta["model"]):
-        for key, text in chunks.items():
+        for text in chunks.values():
             obj = _maybe_json(text)
             if obj is not None:
                 _deep_scan(obj, meta, marker("deep scan"),

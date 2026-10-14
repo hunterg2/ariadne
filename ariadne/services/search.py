@@ -11,17 +11,24 @@ _QUOTED = re.compile(r'"([^"]+)"')
 _TAG_SHORTHAND = re.compile(r"#([\w-]+)")
 _STASH = re.compile(r"\$S(\d+)\$")
 
+# SQLite refuses a LIKE pattern past 50,000 bytes ("pattern too complex"),
+# and nobody types a query a tenth of that: the rest is dropped
+MAX_QUERY = 4000
+# the trigram phrase is a prefix of the needle (a row that holds the whole
+# holds the prefix), and a phrase of thousands of trigrams is slow to match
+MAX_PHRASE = 200
+
 
 def parse_search(query):
     rules = {}
-    for part in (query or "").split(";"):
+    for part in (query or "")[:MAX_QUERY].split(";"):
         if ":" not in part:
             continue
         key, _, raw = part.partition(":")
         key = key.strip().lower()
         strings = []
 
-        def stash(match):
+        def stash(match, strings=strings):        # bound per part, not to the loop's last
             strings.append(match.group(1))
             return f"$S{len(strings) - 1}$"
 
@@ -119,7 +126,7 @@ def fts_match(rules):
             if not all(len(c) >= 3 for c in cores):
                 phrases = []
                 break
-            best = max(cores, key=len).replace('"', '""')
+            best = max(cores, key=len)[:MAX_PHRASE].replace('"', '""')
             phrases.append(f'{column}: "{best}"')
         if phrases:
             return " OR ".join(phrases)

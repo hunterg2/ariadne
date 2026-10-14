@@ -19,6 +19,8 @@ up. Options:
 
 Everything the app writes lives beside this file: organizer.db, cache/,
 backups/, settings.json, history.json and projects.json.
+What it reports goes to ariadne.log there as well (1 MB, three older
+copies kept), which is the place to look when a scheduled post failed.
 Image folders are only ever changed by explicit actions taken in the UI
 (trash, move, export, edit).
 
@@ -114,8 +116,9 @@ def parse_args(argv):
 
 
 def start_workers():
-    from ariadne.services import index
+    from ariadne.services import index, updates
     index.request_all()
+    updates.check_soon()        # once a day at most; Settings shows the answer
 
 
 def main(argv=None):

@@ -12,9 +12,11 @@ device out at once.
 import hashlib
 import hmac
 import ipaddress
+import os
 import secrets
 import threading
 import time
+from urllib.parse import urlsplit
 
 from flask import jsonify, request
 
@@ -32,12 +34,84 @@ LOCK_AFTER = 10             # wrong guesses before an address is locked out
 LOCK_SECONDS = 15 * 60
 
 # what a device may fetch before it has entered the PIN: the page shell, its
-# bundle and icon, and the PIN routes themselves
-OPEN_PATHS = {"/", "/index.html", "/icon.png", "/favicon.ico"}
-OPEN_PREFIXES = ("/assets/", "/api/auth/")
+# bundle, icons and home-screen manifest, and the PIN routes themselves
+OPEN_PATHS = {"/", "/index.html", "/icon.png", "/favicon.ico", "/manifest.webmanifest"}
+OPEN_PREFIXES = ("/assets/", "/icons/", "/api/auth/")
+
+# Names a request from the computer itself may be addressed to. A web page
+# can point a domain of its own at 127.0.0.1 (DNS rebinding) and then call
+# this server from the browser as the PIN-exempt computer; the Host header
+# it sends is that domain, and ``host_ok`` is where it is turned away.
+LOOPBACK_NAMES = {"localhost", "127.0.0.1", "::1"}
+
+# A web page on another site cannot read this server's answers (there is
+# no CORS here), but it can still make the browser send requests: a GET
+# with a side effect, a form post (those need no preflight), a navigation
+# to /image. Browsers say where a request came from (Sec-Fetch-Site, and
+# Origin on every cross-origin request and every POST), and ``cross_site``
+# turns those away from the routes below. The OAuth callback is where a
+# provider sends the browser on purpose. Tools that are not browsers send
+# neither header and are let through as before.
+CROSS_SITE_PATHS = {"/api/oauth/callback"}
 
 _misses = {}
 _lock = threading.Lock()
+
+
+def trusted_hosts():
+    """The loopback names plus whatever ARIADNE_TRUSTED_HOSTS adds (a
+    hosts-file alias of your own), lower-cased, without ports."""
+    extra = os.environ.get(config.TRUSTED_HOSTS_ENV, "")
+    return LOOPBACK_NAMES | {host_name(h) for h in extra.split(",") if h.strip()}
+
+
+def host_name(host):
+    """The name in a Host header without its port: "localhost:5000" ->
+    "localhost", "[::1]:5000" -> "::1"."""
+    host = (host or "").strip().lower()
+    if host.startswith("["):
+        end = host.find("]")
+        return host[1:end] if end > 0 else host
+    if host.count(":") == 1:
+        host = host.split(":", 1)[0]
+    return host.rstrip(".")       # "localhost." is the same name, fully qualified
+
+
+def host_ok(req=None):
+    """Is a loopback request addressed to this computer? Other devices are
+    bound by the PIN cookie, which a browser only sends to the origin that
+    earned it, so for them any name is fine."""
+    req = req or request
+    if not is_loopback(req.remote_addr):
+        return True
+    name = host_name(req.host)
+    return name in trusted_hosts() or is_loopback(name)
+
+
+def guarded(path):
+    """Is this a route a page from another site must not reach?"""
+    return path.startswith("/api/") or path in ("/image", "/thumb")
+
+
+def cross_site(req=None):
+    """Does this request come from a web page on another site? Decided
+    from Sec-Fetch-Site, and from Origin when one is sent. An Origin on
+    this computer's own names is fine: the dev server serves the page
+    from another port and proxies the calls."""
+    req = req or request
+    site = (req.headers.get("Sec-Fetch-Site") or "").lower()
+    if site in ("cross-site", "same-site"):
+        return True
+    origin = req.headers.get("Origin")
+    if not origin:
+        return False
+    if origin == "null":
+        return True
+    netloc = urlsplit(origin).netloc.lower()
+    if netloc == (req.host or "").lower():
+        return False
+    name = host_name(netloc)
+    return not (is_loopback(req.remote_addr) and (name in trusted_hosts() or is_loopback(name)))
 
 
 def is_loopback(addr):
@@ -68,8 +142,18 @@ def _digest(salt, pin):
                                ITERATIONS).hex()
 
 
+def _pin_text(pin):
+    """The PIN as typed. A number (a keypad field, a hand-written client)
+    counts as its digits; anything else is no PIN."""
+    if isinstance(pin, bool) or pin is None:
+        return ""
+    if isinstance(pin, (int, float)):
+        return str(pin)
+    return pin.strip() if isinstance(pin, str) else ""
+
+
 def set_pin(pin):
-    pin = (pin or "").strip()
+    pin = _pin_text(pin)
     if len(pin) < MIN_LENGTH:
         raise ValueError(f"Use at least {MIN_LENGTH} characters.")
     if len(pin) > MAX_LENGTH:
@@ -91,7 +175,7 @@ def _matches(pin):
     if "$" not in stored:
         return False
     salt, digest = stored.split("$", 1)
-    return hmac.compare_digest(_digest(salt, (pin or "").strip()), digest)
+    return hmac.compare_digest(_digest(salt, _pin_text(pin)), digest)
 
 
 def locked_until(addr):
@@ -176,6 +260,12 @@ def status(req=None):
 
 def gate():
     """Flask ``before_request``: None lets the request through."""
+    if not host_ok():
+        return _refuse(403, f"This request was addressed to {host_name(request.host)!r}, which "
+                            f"is not this computer. Open Ariadne at "
+                            f"http://127.0.0.1:{config.BIND_PORT} instead.", False)
+    if guarded(request.path) and request.path not in CROSS_SITE_PATHS and cross_site():
+        return _refuse(403, "Ariadne does not take requests made by other web pages.", False)
     if not required():
         return None
     path = request.path

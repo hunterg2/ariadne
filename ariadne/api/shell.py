@@ -1,12 +1,14 @@
 """The page itself, settings, the folder picker, and maintenance."""
 
+import io
 import os
 import platform
 import shutil
 
 from flask import Blueprint, jsonify, request, send_file
 
-from ariadne import config, store
+from ariadne import config, store, text
+from ariadne import log as log_svc
 from ariadne.db import db
 from ariadne.services import thumbs
 from ariadne.services.sidebar import get_drives
@@ -58,7 +60,7 @@ def browse():
         ):
             parent = "root"
         return jsonify({"directories": dirs, "current_path": path, "parent_path": parent})
-    except OSError as exc:
+    except (OSError, ValueError) as exc:         # ValueError: a NUL byte in the path
         return jsonify({"error": str(exc)}), 400
 
 
@@ -105,6 +107,63 @@ def system_startup():
     from ariadne.services import system
     ok, message = system.enable_startup() if request.method == "POST" else system.disable_startup()
     return jsonify({"success": ok, "message": message, **system.status()})
+
+
+@bp.route("/api/system/diagnostics")
+def system_diagnostics():
+    """What Settings copies to the clipboard for a bug report; ``?download=1``
+    hands it over as a text file when the browser refuses the clipboard."""
+    from ariadne.services import system
+    text = system.diagnostics()
+    if request.args.get("download"):
+        return send_file(io.BytesIO(text.encode("utf-8")), mimetype="text/plain", as_attachment=True,
+                         download_name="ariadne-diagnostics.txt", max_age=0)
+    return jsonify({"success": True, "text": text, "log_path": str(log_svc.path() or "")})
+
+
+@bp.route("/api/system/report")
+def system_report():
+    """A bug report from what the user typed in Settings: the prefilled
+    GitHub issue as JSON, or with ``?download=1`` the whole report as a
+    text file to attach or paste."""
+    from ariadne.services import system
+    args = request.args
+    out = system.report(text.clean_text(args.get("summary", "")), text.clean_text(args.get("steps", "")),
+                        args.get("diagnostics", "1") != "0")
+    if args.get("download"):
+        return send_file(io.BytesIO(out["text"].encode("utf-8")), mimetype="text/plain",
+                         as_attachment=True, download_name="ariadne-report.txt", max_age=0)
+    return jsonify({"success": True, **out})
+
+
+@bp.route("/api/system/log")
+def system_log():
+    path = log_svc.path()
+    if path is None or not path.exists():
+        return jsonify({"success": False, "error": "There is no log file yet."}), 404
+    return send_file(path, mimetype="text/plain", as_attachment=True,
+                     download_name=log_svc.NAME, max_age=0)
+
+
+@bp.route("/api/backup")
+def download_backup():
+    """The open library's irreplaceable files as one zip (services/backup)."""
+    from ariadne.services import backup
+    return send_file(io.BytesIO(backup.build()), mimetype="application/zip",
+                     as_attachment=True, download_name=backup.filename(), max_age=0)
+
+
+@bp.route("/api/updates")
+def updates_state():
+    from ariadne.services import updates
+    return jsonify({"success": True, **updates.state()})
+
+
+@bp.route("/api/updates/check", methods=["POST"])
+def updates_check():
+    """"Check now" in Settings: asks GitHub whatever the last look said."""
+    from ariadne.services import updates
+    return jsonify({"success": True, **updates.check(force=True)})
 
 
 @bp.route("/api/stats")

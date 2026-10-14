@@ -17,12 +17,14 @@ import os
 import threading
 import time
 
-from ariadne import config, metadata, store
+from ariadne import config, metadata, safety, store, text
+from ariadne import db as db_module
 from ariadne.db import db
+from ariadne.log import log
 from ariadne.services import collections as collections_svc
 from ariadne.services import tags as tags_svc
 from ariadne.services import thumbs
-from ariadne.services.meta_cache import get_metadata, meta_from_row
+from ariadne.services.meta_cache import get_metadata
 from ariadne.services.search import prepare_query, to_sql
 
 # folders a recursive scan never descends into
@@ -68,7 +70,7 @@ def scope_sql(folder, recursive=False, col="i.folder"):
     The recursive form is a range on the folder column, which the index
     answers directly: every descendant sorts between ``root + sep`` and
     ``root + sep`` followed by the largest code point."""
-    root = os.path.normpath(folder)
+    root = safety.as_listed(folder)      # spelled as the rows are
     if not recursive:
         return f"{col}=?", [root]
     low = root + os.sep
@@ -91,7 +93,13 @@ def _walk(root, recursive):
             continue
         first = False
         subdirs = []
+        unstorable = 0
         for e in entries:
+            if not text.encodable(e.name):
+                # half an emoji in the name (NTFS allows it): the path cannot
+                # go into SQLite, and one such file used to fail the whole scan
+                unstorable += 1
+                continue
             try:
                 if e.is_dir(follow_symlinks=False):
                     if (recursive and not e.name.startswith(".")
@@ -103,6 +111,9 @@ def _walk(root, recursive):
             except OSError:
                 continue
             yield parent, e
+        if unstorable:
+            log.warning(f"[index] {parent}: skipped {unstorable} name(s) with characters "
+                        f"that cannot be stored (an unpaired surrogate)")
         stack.extend(sorted(subdirs, reverse=True))
 
 
@@ -110,7 +121,9 @@ def scan_folder(folder, recursive=False):
     """Upsert every image file in ``folder``; with ``recursive`` also those in
     its subfolders, each row keeping its real parent in ``folder``. Returns
     counts."""
-    folder = os.path.normpath(folder)
+    # rows are spelled like the folder list, whatever spelling the request
+    # used, or the same file could be indexed under two
+    folder = safety.as_listed(folder)
     d = db()
     now = time.time()
     where, args = scope_sql(folder, recursive, "folder")
@@ -274,7 +287,7 @@ class Indexer:
         self.status = {"busy": False, "folder": "", "pending": 0, "last": None}
 
     def request(self, folder, recursive=False):
-        folder = os.path.normpath(folder)
+        folder = safety.as_listed(folder)
         with self._lock:
             self._queue = [q for q in self._queue if q[0] != folder]
             self._queue.insert(0, (folder, bool(recursive)))
@@ -312,18 +325,20 @@ class Indexer:
                 try:
                     self.status["last"] = scan_folder(folder, recursive)
                 except Exception as exc:          # a bad folder must not kill the thread
-                    print(f"[index] {folder}: {exc}")
+                    log.warning(f"[index] {folder}: {exc}")
             try:
                 did = 0 if self._stopping else enrich(25, folder, recursive)
                 self.status["pending"] = pending_count()
                 if did:
                     continue
             except Exception as exc:
-                print(f"[index] enrich: {exc}")
+                log.warning(f"[index] enrich: {exc}")
             self.status.update(busy=False, folder="")
+            db_module.release()               # hold no handle while idle
             self._wake.wait(timeout=5)
             self._wake.clear()
         self.status.update(busy=False, folder="")
+        db_module.release()
 
 
 indexer = Indexer()

@@ -20,6 +20,14 @@ BIND_HOST = DEFAULT_HOST
 BIND_PORT = DEFAULT_PORT
 PORT_ENV = "IMGORG_PORT"          # hands the chosen port to the reloader child
 NO_BROWSER_ENV = "ORGANIZER_NO_BROWSER"
+# Names a loopback request may be addressed to besides localhost and the
+# loopback addresses (see services/auth.host_ok), comma separated: for a
+# hosts-file alias of your own.
+TRUSTED_HOSTS_ENV = "ARIADNE_TRUSTED_HOSTS"
+# Where the update notice looks for the newest release. The public
+# repository: releases are tagged in both at once, and a private one cannot
+# be asked without a token.
+UPDATE_REPO = "hunterg2/ariadne"
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 ROOT_DIR = PACKAGE_DIR.parent              # app.py, web/
@@ -29,7 +37,12 @@ THUMB_SIZE = 512
 THUMB_VERSION = 2          # bump to invalidate every cached thumbnail
 THUMB_QUALITY = 82         # WebP quality; settings.thumb_quality overrides it
 BACKUPS_KEPT = 7           # database copies kept in backups/
-VALID_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
+# what the index takes, and the only types /image and /thumb serve: a
+# library folder can hold an .html or .svg too, and served from this origin
+# that would be a page with the app's rights
+IMAGE_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+               ".webp": "image/webp", ".gif": "image/gif", ".bmp": "image/bmp"}
+VALID_EXTS = set(IMAGE_TYPES)
 REWRITABLE_FORMATS = ("png", "jpeg", "webp")   # formats metadata can be written into
 SCHEMA_VERSION = 2         # the v1 -> v2 JSON migration marker (kv.schema_version)
 META_CACHE_VERSION = 4     # 4: kind + camera columns (Stage 1)
@@ -77,6 +90,7 @@ DEFAULT_SETTINGS = {
     "ui": {"grid_size": 250, "layout": "square", "sort": "date_desc"},
     # added in the revamp
     "warm_thumbs": True,                    # build thumbnails while indexing
+    "check_updates": True,                  # ask GitHub for a newer release once a day
 }
 
 

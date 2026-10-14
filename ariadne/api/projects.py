@@ -16,6 +16,10 @@ from ariadne.services.library import library_payload
 bp = Blueprint("projects", __name__)
 
 
+def _text(value):
+    return value.strip() if isinstance(value, str) else ""
+
+
 @bp.route("/api/projects")
 def list_projects():
     data = store.load_projects()
@@ -31,7 +35,7 @@ def list_projects():
 
 @bp.route("/api/projects/create", methods=["POST"])
 def create_project():
-    name = ((request.json or {}).get("name") or "").strip()
+    name = _text((request.json or {}).get("name"))
     if not name:
         return jsonify({"success": False, "error": "Give the project a name."}), 400
     data = store.load_projects()
@@ -59,7 +63,7 @@ def switch_project():
 @bp.route("/api/projects/rename", methods=["POST"])
 def rename_project():
     body = request.json or {}
-    name = (body.get("name") or "").strip()
+    name = _text(body.get("name"))
     if not name:
         return jsonify({"success": False, "error": "Give the project a name."}), 400
     data = store.load_projects()
@@ -84,9 +88,21 @@ def delete_project():
     if data["active"] == pid:
         data["active"] = data["projects"][0]["id"]
     store.save_projects(data)
-    # only the library is removed; the image folders it pointed at are untouched
-    shutil.rmtree(config.project_dir(pid), ignore_errors=True)
+    # switch away first: use_project is what closes the database handles
+    # and stops the indexer, and Windows will not delete an open file
     store.use_project(data["active"])
+    # only the library is removed; the image folders it pointed at are untouched
+    folder = config.project_dir(pid)
+    for _attempt in range(5):
+        try:
+            shutil.rmtree(folder)
+            break
+        except FileNotFoundError:
+            break
+        except OSError:
+            time.sleep(0.2)          # a request that still had the old file is finishing
+    else:
+        shutil.rmtree(folder, ignore_errors=True)
     return jsonify({"success": True, "active": data["active"]})
 
 
@@ -113,7 +129,7 @@ def import_library():
     """Restore ratings and tags from an export. Files are never touched, only
     the library rows that point at them."""
     body = request.json or {}
-    payload = body.get("data") or {}
+    payload = body.get("data") if isinstance(body.get("data"), dict) else {}
     mode = body.get("mode", "merge")
 
     fmt = payload.get("format")
@@ -125,40 +141,54 @@ def import_library():
     ratings = payload.get("ratings") or {}
     if fmt == "image-organizer-library":
         # the previous build exported liked / loved categories
+        categories = payload.get("categories") if isinstance(payload.get("categories"), dict) else {}
         ratings = {p: {"stars": {"liked": 3, "loved": 5}[c]}
-                   for p, c in (payload.get("categories") or {}).items()
+                   for p, c in categories.items()
                    if isinstance(p, str) and c in ("liked", "loved")}
     if not isinstance(ratings, dict) or not isinstance(tags, dict):
         return jsonify({"success": False, "error": "The export is malformed."}), 400
 
-    backup_db()          # before touching anything
-    d = db()
-    if mode == "replace":
-        d.execute("DELETE FROM ratings")
-        d.execute("DELETE FROM tags")
-
-    rated = 0
+    # Read the whole file first, skipping entries that make no sense, and
+    # only then write, in one transaction. A bad entry half-way through used
+    # to leave "replace" with its deletes done and its inserts not.
+    rows, links = [], []
     now = time.time()
     for path, r in ratings.items():
         if not isinstance(path, str) or not isinstance(r, dict):
             continue
-        stars = max(0, min(5, int(r.get("stars") or 0)))
-        rejected = 1 if r.get("rejected") else 0
-        label = (r.get("label") or None) if isinstance(r.get("label"), str) else None
-        d.execute("INSERT OR REPLACE INTO ratings (path, stars, rejected, label, updated) "
-                  "VALUES (?,?,?,?,?)", (path, stars, rejected, label, now))
-        rated += 1
-    links = 0
+        try:
+            stars = max(0, min(5, int(r.get("stars") or 0)))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        label = r.get("label") if isinstance(r.get("label"), str) and r.get("label") else None
+        rows.append((path, stars, 1 if r.get("rejected") else 0, label, now))
     for path, names in tags.items():
         if not isinstance(path, str) or not isinstance(names, list):
             continue
         for tag in names:
-            tag = str(tag).strip().lstrip("#")
-            if tag:
-                d.execute("INSERT OR REPLACE INTO tags VALUES (?,?)", (path, tag))
-                links += 1
-    d.commit()
+            if isinstance(tag, (str, int, float)) and not isinstance(tag, bool):
+                tag = str(tag).strip().lstrip("#")
+                if tag:
+                    links.append((path, tag))
 
-    missing = sum(1 for p in set(ratings) | set(tags) if not os.path.exists(p))
-    return jsonify({"success": True, "ratings": rated, "tag_links": links,
+    if mode == "replace" and not rows and not links:
+        return jsonify({"success": False,
+                        "error": "That export holds no ratings or tags; nothing was replaced."}), 400
+
+    backup_db()          # before touching anything
+    d = db()
+    try:
+        if mode == "replace":
+            d.execute("DELETE FROM ratings")
+            d.execute("DELETE FROM tags")
+        d.executemany("INSERT OR REPLACE INTO ratings (path, stars, rejected, label, updated) "
+                      "VALUES (?,?,?,?,?)", rows)
+        d.executemany("INSERT OR REPLACE INTO tags VALUES (?,?)", links)
+        d.commit()
+    except Exception:
+        d.rollback()
+        raise
+
+    missing = sum(1 for p in {r[0] for r in rows} | {t[0] for t in links} if not os.path.exists(p))
+    return jsonify({"success": True, "ratings": len(rows), "tag_links": len(links),
                     "missing_files": missing})

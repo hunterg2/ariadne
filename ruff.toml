@@ -1,0 +1,18 @@
+# Lint rules for the Python side. CI runs "ruff check ." before pytest;
+# locally: py -3 -m ruff check .   (py -3 -m pip install ruff once)
+line-length = 120
+target-version = "py310"
+extend-exclude = ["web", "build"]
+
+[lint]
+# pyflakes, the pycodestyle errors, import order, and bugbear's likely bugs
+select = ["E4", "E7", "E9", "F", "I", "B"]
+# a named lambda is fine
+ignore = ["E731"]
+
+[lint.per-file-ignores]
+# tests import fixtures from each other; a fixture parameter then shadows the import
+"tests/*" = ["F401", "F811"]
+
+[lint.isort]
+known-first-party = ["ariadne", "tests"]

@@ -92,3 +92,32 @@ def test_removing_the_pin(client):
     assert client.delete("/api/settings/pin").json["has_pin"] is False
     assert client.get("/api/settings", environ_base=REMOTE).status_code == 403
     assert auth.cookie_value() == ""
+
+
+def test_host_names():
+    assert auth.host_name("localhost:5000") == "localhost" and auth.host_name("LOCALHOST") == "localhost"
+    assert auth.host_name("127.0.0.1") == "127.0.0.1" and auth.host_name("[::1]:5000") == "::1"
+    assert auth.host_name("evil.example:5000") == "evil.example" and auth.host_name("") == ""
+
+
+def test_loopback_requests_must_be_addressed_to_this_computer(client, monkeypatch):
+    """DNS rebinding: a page points its own domain at 127.0.0.1 and calls the
+    API from the browser as the PIN-exempt computer. The Host header gives
+    it away and the request is refused, every path included."""
+    for host in ("localhost", "127.0.0.1:5000", "[::1]:5000", "127.0.0.1"):
+        assert client.get("/api/settings", headers={"Host": host}).status_code == 200, host
+    for path in ("/api/settings", "/", "/api/auth/status", "/thumb?path=x"):
+        res = client.get(path, headers={"Host": "evil.example:5000"})
+        assert res.status_code == 403, path
+        assert res.json["pin"] is False and "evil.example" in res.json["error"]
+    # other devices are bound by the PIN cookie, not by the name they used
+    client.post("/api/settings/pin", json={"pin": "2468"})
+    client.delete_cookie(auth.COOKIE)
+    res = client.post("/api/auth/pin", json={"pin": "2468"}, headers={"Host": "my-pc.lan:5000"},
+                      environ_base=REMOTE)
+    assert res.status_code == 200
+    assert client.get("/api/settings", headers={"Host": "my-pc.lan:5000"}, environ_base=REMOTE).status_code == 200
+    # a hosts-file alias of your own can be allowed
+    monkeypatch.setenv(auth.config.TRUSTED_HOSTS_ENV, "Ariadne.local:5000, other")
+    assert client.get("/api/settings", headers={"Host": "ariadne.local:5000"}).status_code == 200
+    assert client.get("/api/settings", headers={"Host": "evil.example"}).status_code == 403

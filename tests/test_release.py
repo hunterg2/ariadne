@@ -46,3 +46,30 @@ def test_launchers_point_python_at_the_app_and_the_data_folder():
     assert "--tray --no-browser" in tray and "--tray" not in plain
     # the zip is named after it, so it has to be a plain version number
     assert re.fullmatch(r"\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?", mod.version())
+
+
+def test_lock_pins_every_package_the_zip_installs():
+    """requirements.lock holds exact versions for the requirements, the
+    optional packages and their dependencies, and the build hands it to
+    pip as a constraints file."""
+    mod = _module()
+    pins = {}
+    for line in (ROOT / "requirements.lock").read_text(encoding="utf-8").splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        name, sep, version = line.partition("==")
+        assert sep and re.fullmatch(r"\d[0-9A-Za-z.]*", version), line
+        pins[name.lower()] = version
+    wanted = [re.split(r"[<>=!~ ]", line.strip())[0].lower()
+              for line in (ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines()
+              if line.strip() and not line.startswith("#")]
+    wanted += [name.lower() for name in mod.OPTIONAL]
+    assert set(wanted) <= set(pins), set(wanted) - set(pins)
+    assert {"werkzeug", "jinja2"} <= set(pins)              # dependencies are pinned too
+
+    args = mod.pip_args(True)
+    assert args[:2] == ["-r", str(ROOT / "requirements.txt")] and "pystray" in args
+    assert args[-2:] == ["-c", str(ROOT / "requirements.lock")]
+    assert "pystray" not in mod.pip_args(False) and mod.pip_args(False)[-2:] == args[-2:]
+    assert "-c" not in mod.pip_args(True, root=ROOT / "nowhere")       # no lock, no constraint

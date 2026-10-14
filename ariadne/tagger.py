@@ -261,7 +261,7 @@ def suggest(path, meta, cfg, vocabulary=None):
         return [], f"{exc.code} from the model: {detail}"
     except urllib.error.URLError as exc:
         return [], f"Could not reach it: {exc.reason}"
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, Image.DecompressionBombError) as exc:
         return [], str(exc)[:200]
 
 
