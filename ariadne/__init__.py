@@ -27,7 +27,7 @@ Image.MAX_IMAGE_PIXELS = 1_000_000_000
 # the home-screen manifest in web/public; Windows does not know the suffix
 mimetypes.add_type("application/manifest+json", ".webmanifest")
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 
 
 def create_app(app_dir=None):
