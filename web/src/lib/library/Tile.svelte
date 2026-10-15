@@ -43,7 +43,7 @@
   title={row ? `${row.name}\n${row.width}×${row.height}` : ""}
 >
   {#if row}
-    <Thumb path={row.path} fit={natural ? "contain" : "cover"} />
+    <Thumb path={row.path} fit={natural ? "contain" : "cover"} lazy={false} />
     <div class="top" class:always={!!sub}>
       {#if row.kind === "generated"}
         <span class="kind" title="Generated"><Icon name="sparkles" size={12} /></span>

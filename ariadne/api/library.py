@@ -122,7 +122,11 @@ def check_history():
     """Which saved folders can still be opened, plus what the sidebar needs to
     sort by. Called after the sidebar has drawn, so a dead network path cannot
     stall the first paint. Counting files is opt-in because it means listing
-    every folder, which is not free on a big library."""
+    a folder, which is not free on a big one; and the sidebar shows the
+    index's figure for a folder as soon as it has one, so only a folder the
+    index has nothing for yet (just added, not scanned) is listed on disk.
+    Listing every folder on every refresh cost a 200k-image library a third
+    of a second."""
     want_counts = request.args.get("counts") == "1"
     status = {}
 
@@ -137,19 +141,24 @@ def check_history():
                     entry["mtime"] = st.st_mtime
                 except OSError:
                     pass
-                if want_counts and entry["ok"]:
-                    try:
-                        entry["count"] = sum(
-                            1 for e in os.scandir(path)
-                            if e.is_file()
-                            and os.path.splitext(e.name)[1].lower() in config.VALID_EXTS)
-                    except OSError:
-                        entry["count"] = None
                 status[path] = entry
             elif it.get("type") == "group":
                 walk(it.get("items", []))
 
     walk(store.load_history())
+    if want_counts:
+        readable = [p for p, e in status.items() if e["ok"]]
+        known = index.folder_summaries(readable) if readable else {}
+        for path in readable:
+            if known.get(path, {}).get("total"):
+                continue
+            try:
+                status[path]["count"] = sum(
+                    1 for e in os.scandir(path)
+                    if e.is_file()
+                    and os.path.splitext(e.name)[1].lower() in config.VALID_EXTS)
+            except OSError:
+                status[path]["count"] = None
     return jsonify({"status": status})
 
 

@@ -111,11 +111,11 @@
   /* ---- editor ---- */
   const editDefaults = $derived((settings.data.edit_defaults as Record<string, any> | undefined) ?? {});
 
-  async function refresh() {
-    try { cache = await api.cacheStats(); lib = await api.libraryStats(); projects = (await api.projects()).projects; } catch { /* ignore */ }
-    try { sys = await api.systemInfo(); } catch { /* ignore */ }
-    try { authSt = await api.authStatus(); } catch { /* ignore */ }
-    try { upd = await api.updateState(); } catch { /* ignore */ }
+  function refresh() {
+    /* each answer lands as it comes: the thumbnail count can take a moment on a big cache */
+    const take = <T,>(p: Promise<T>, set: (v: T) => void) => p.then(set).catch(() => {});
+    return Promise.all([take(api.cacheStats(), (v) => (cache = v)), take(api.libraryStats(), (v) => (lib = v)), take(api.projects(), (v) => (projects = v.projects)),
+      take(api.systemInfo(), (v) => (sys = v)), take(api.authStatus(), (v) => (authSt = v)), take(api.updateState(), (v) => (upd = v))]);
   }
   onMount(refresh);
 

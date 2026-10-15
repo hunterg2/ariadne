@@ -24,8 +24,11 @@ def meta_from_row(row):
     }
 
 
-def get_metadata(full_path, st=None):
-    """Cached wrapper. Re-reads the file only when mtime or size changed."""
+def get_metadata(full_path, st=None, img=None, commit=True):
+    """Cached wrapper. Re-reads the file only when mtime or size changed.
+    ``img`` is the file already open (the indexer hands it over, so the
+    file is read once); ``commit=False`` leaves the row to the caller's
+    commit."""
     try:
         st = st or os.stat(full_path)
     except OSError:
@@ -36,7 +39,7 @@ def get_metadata(full_path, st=None):
     if row and row["mtime"] == st.st_mtime_ns and row["size"] == st.st_size:
         return meta_from_row(row)
 
-    meta = metadata.extract(full_path)
+    meta = metadata.extract(full_path, img=img)
     # an upsert rather than REPLACE: the row keeps its rowid, which the
     # prompt search index is keyed on
     d.execute(
@@ -59,5 +62,6 @@ def get_metadata(full_path, st=None):
          json.dumps(meta["loras"]), meta["phash"], meta["source"],
          meta["prompt_list"], meta["prompt_line"], meta["prompt_lines"]),
     )
-    d.commit()
+    if commit:
+        d.commit()
     return meta

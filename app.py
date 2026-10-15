@@ -40,7 +40,26 @@ import webbrowser
 from ariadne import config, create_app
 
 
-def port_is_open(port, host="127.0.0.1", timeout=0.4):
+def port_is_open(port, host="127.0.0.1"):
+    """Is something listening on the port? Asked by trying to bind it: the
+    bind fails at once when a server holds the port. The connect this used
+    to make waited out its whole timeout when nothing listened (Windows
+    drops the attempt rather than refusing it), 400 ms of every start. No
+    SO_REUSEADDR on the probe, or Windows would let it bind over a server.
+    Only for before our own server binds; ``port_answers`` is the poll
+    that runs alongside it."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        try:
+            sock.bind((host, port))
+        except OSError:
+            return True
+        return False
+
+
+def port_answers(port, host="127.0.0.1", timeout=0.4):
+    """Does a server accept connections on the port? A connect, which is
+    what the browser is about to do; safe to poll while the server in this
+    process binds, where a bind probe could take the port from under it."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.settimeout(timeout)
         return sock.connect_ex((host, port)) == 0
@@ -69,7 +88,7 @@ def open_browser_when_ready(url, port, timeout=15):
     def wait():
         deadline = time.time() + timeout
         while time.time() < deadline:
-            if port_is_open(port):
+            if port_answers(port):
                 break
             time.sleep(0.15)
         try:
@@ -115,10 +134,35 @@ def parse_args(argv):
     return opts
 
 
+# how long after start the saved folders are rescanned for new files. The
+# index is there from the last run, so the first screen has what it needs;
+# the rescan is CPU work on another thread of the same interpreter, and
+# started at once it slowed the server's own start and the first requests.
+RESCAN_DELAY = 3.0
+
+
 def start_workers():
     from ariadne.services import index, updates
-    index.request_all()
+    rescan = threading.Timer(RESCAN_DELAY, index.request_all)
+    rescan.daemon = True            # quitting must not wait for it
+    rescan.start()
     updates.check_soon()        # once a day at most; Settings shows the answer
+
+
+def backup_in_background():
+    """The start-of-day copy of the library (``db.backup_db``) on its own
+    thread. It took a second or two on a big library and ran before the
+    server could listen, and nothing waits for it: the copy is of a
+    snapshot, so the indexer writing meanwhile is fine, and a copy cut
+    short by quitting is renamed into place only when complete."""
+    from ariadne.db import backup_db
+
+    def work():
+        saved = backup_db()
+        if saved:
+            print(f"[backup] library copied to {saved.name} (last {config.BACKUPS_KEPT} kept)")
+
+    threading.Thread(target=work, daemon=True, name="backup").start()
 
 
 def main(argv=None):
@@ -155,14 +199,11 @@ def main(argv=None):
 
     config.BIND_PORT = port
     app = create_app(app_dir=opts["app_dir"])
-    from ariadne.db import backup_db
     from ariadne.services import system
     start_workers()
     if opts["app_dir"]:
         print(f"[data] library and settings in {config.APP_DIR}")
-    saved = backup_db()
-    if saved:
-        print(f"[backup] library copied to {saved.name} (last {config.BACKUPS_KEPT} kept)")
+    backup_in_background()
 
     url = f"http://127.0.0.1:{port}"
     print(f"{config.APP_NAME} running on {url}")

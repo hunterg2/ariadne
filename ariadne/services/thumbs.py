@@ -24,63 +24,100 @@ def thumb_path_for(path, st=None):
     return config.paths.thumb_dir / digest[:2] / f"{digest}.webp"
 
 
-def build_thumb(path, quality=config.THUMB_QUALITY):
+_made = set()          # thumbnail folders known to exist: one mkdir each per run
+# how hard the WebP encoder tries (0 to 6). At the same quality setting,
+# 2 gives the same bytes as Pillow's default of 4 and encodes three times
+# faster (13 ms against 37 for a busy 512px thumbnail); 3 and up cost
+# the time and save nothing at this size.
+WEBP_METHOD = 2
+
+
+def _save(im, tmp, quality):
+    """Write the WebP. A thumbnail folder cleared meanwhile (Settings,
+    clear thumbnails) is made again rather than failing the file."""
     try:
-        st = os.stat(path)
+        im.save(tmp, "WEBP", quality=quality, method=WEBP_METHOD)
+    except FileNotFoundError:
+        _made.discard(tmp.parent)
+        tmp.parent.mkdir(parents=True, exist_ok=True)
+        im.save(tmp, "WEBP", quality=quality, method=WEBP_METHOD)
+
+
+def build_thumb(path, quality=config.THUMB_QUALITY, st=None, img=None, commit=True):
+    """The thumbnail for ``path``, built if it is not there yet. The indexer
+    passes ``st`` and ``img`` (the file it has open, decoded already) and
+    ``commit=False``, its own commit covering the record."""
+    try:
+        st = st or os.stat(path)
         dest = thumb_path_for(path, st)
         if dest.exists():
             return dest
-        dest.parent.mkdir(parents=True, exist_ok=True)
+        if dest.parent not in _made:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            _made.add(dest.parent)
         size = config.THUMB_SIZE
-        with Image.open(path) as im:
+        with metadata.opened(path, img) as im:
             try:
                 im.seek(0)  # first frame of animated gif/webp
             except (EOFError, AttributeError):
                 pass
-            im.draft("RGB", (size, size))   # fast JPEG downscale path
+            if img is None:
+                im.draft("RGB", (size, size))   # fast JPEG downscale path
             im = metadata.oriented(im)      # honour EXIF rotation
             im = im.convert("RGB")
             im.thumbnail((size, size), Image.LANCZOS)
             # the indexer warms thumbnails while /thumb may be building the
             # same one: separate scratch names, and the first replace wins
             tmp = dest.with_name(f"{dest.stem}.{threading.get_ident()}.tmp")
-            im.save(tmp, "WEBP", quality=quality, method=4)
+            _save(im, tmp, quality)
             try:
                 os.replace(tmp, dest)
             except OSError:
                 if not dest.exists():
                     raise
                 os.remove(tmp)
-        remember_thumb(dest, path, st)
+        remember_thumb(dest, path, st, commit)
         return dest
     except (OSError, ValueError, Image.DecompressionBombError) as exc:
         log.warning(f"[thumb] {path}: {exc}")
         return None
 
 
-def remember_thumb(dest, path, st):
+def remember_thumb(dest, path, st, commit=True):
     """Thumbnail names are content hashes and cannot be reversed, so the link
     back to the source has to be stored if the cache is ever to be cleaned."""
     try:
         d = db()
         d.execute("INSERT OR REPLACE INTO thumbs VALUES (?,?,?,?)",
                   (str(dest), path, st.st_mtime_ns, st.st_size))
-        d.commit()
+        if commit:
+            d.commit()
     except sqlite3.Error:
         pass
 
 
 def thumb_cache_stats():
+    """How many thumbnails are on disk and their total size. ``scandir``
+    hands over each entry's size with the listing on Windows, where a
+    ``getsize`` per file was a system call each: half a second for twenty
+    thousand thumbnails, paid by the Settings screen on every open."""
     files = 0
     total = 0
-    for root, _, names in os.walk(config.paths.thumb_dir):
-        for name in names:
-            if name.endswith(".webp"):
-                files += 1
-                try:
-                    total += os.path.getsize(os.path.join(root, name))
-                except OSError:
-                    pass
+    stack = [str(config.paths.thumb_dir)]
+    while stack:
+        try:
+            entries = list(os.scandir(stack.pop()))
+        except OSError:
+            continue
+        for e in entries:
+            try:
+                if e.is_dir(follow_symlinks=False):
+                    stack.append(e.path)
+                elif e.name.endswith(".webp"):
+                    files += 1
+                    total += e.stat(follow_symlinks=False).st_size
+            except OSError:
+                pass
     return files, total
 
 

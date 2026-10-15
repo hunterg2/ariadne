@@ -4,6 +4,7 @@ key/value table and backups.
 Schema changes after the baseline go through ``ariadne/migrations`` (Stage 1).
 """
 
+import os
 import sqlite3
 import threading
 import time
@@ -283,12 +284,22 @@ def backup_db(keep=config.BACKUPS_KEPT):
     try:
         backup_dir.mkdir(parents=True, exist_ok=True)
         dest = backup_dir / f"organizer-{time.strftime('%Y%m%d-%H%M%S')}.db"
+        # written under another name and renamed when complete: the copy
+        # runs in the background at start, and one cut short by the app
+        # closing must not sit among the backups looking like a backup
+        for stale in backup_dir.glob("organizer-*.part"):
+            try:
+                stale.unlink()
+            except OSError:
+                pass
+        part = dest.with_suffix(".part")
         src = sqlite3.connect(str(db_file))
-        dst = sqlite3.connect(str(dest))
+        dst = sqlite3.connect(str(part))
         with dst:
             src.backup(dst)          # safe even with WAL and open readers
         src.close()
         dst.close()
+        os.replace(part, dest)
         old = sorted(backup_dir.glob("organizer-*.db"))
         for stale in old[:-keep]:
             try:

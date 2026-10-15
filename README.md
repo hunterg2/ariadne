@@ -213,6 +213,7 @@ py -3 -m pytest -q                       # backend tests
 py -3 -m ruff check .                    # lint, same rules as CI (ruff.toml)
 cd web && npm run e2e                    # browser tests (Playwright, see below)
 py -3 scripts/bench_index.py 200000      # time the index on a synthetic library
+py -3 scripts/bench_app.py 20000         # time a cold start and the routes the screens call, on a sample library
 py -3 scripts/make_sample_library.py DIR # a folder of sample PNGs with prompts
 ```
 

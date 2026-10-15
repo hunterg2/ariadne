@@ -22,6 +22,13 @@ export function dateOnly(seconds: number | null | undefined): string {
   return new Date(seconds * 1000).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
 }
 
+/* a calendar day written "YYYY-MM-DD", shown the viewer's way without a time zone shift */
+export function dayLabel(iso: string | null | undefined): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso || "");
+  if (!m) return iso || "";
+  return new Date(+m[1], +m[2] - 1, +m[3]).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
+
 export function relative(seconds: number | null | undefined): string {
   if (!seconds) return "";
   const diff = Date.now() / 1000 - seconds;

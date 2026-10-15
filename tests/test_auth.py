@@ -1,10 +1,13 @@
 """The PIN gate: the computer itself is always open, other addresses need
 the PIN, and guessing is slow and finite."""
 
+import gzip
+
 import pytest
 
 from ariadne import config
 from ariadne.services import auth
+from tests.conftest import register_folder
 
 REMOTE = {"REMOTE_ADDR": "192.168.1.23"}
 
@@ -42,6 +45,29 @@ def test_other_devices_are_turned_away_without_a_pin(client):
     st = client.get("/api/auth/status", environ_base=REMOTE).json
     assert st["required"] is True and st["has_pin"] is False and st["authenticated"] is False
     assert client.post("/api/auth/pin", json={"pin": "1234"}, environ_base=REMOTE).status_code == 403
+
+
+def test_json_for_other_devices_is_gzipped(client, library):
+    """A page of the grid is hundreds of KB of JSON: a phone on wifi gets
+    it gzipped, a tenth of the size; this computer gets it as it is, and
+    so does anything small."""
+    register_folder(client, library["folder"])
+    client.post("/api/images/scan", json={"folder": library["folder"], "wait": True})
+    client.post("/api/settings/pin", json={"pin": "2468"})
+    client.post("/api/auth/pin", json={"pin": "2468"}, environ_base=REMOTE)
+    accept = {"Accept-Encoding": "gzip, deflate"}
+    packed = client.get("/api/images?limit=50", environ_base=REMOTE, headers=accept)
+    assert packed.status_code == 200 and packed.headers.get("Content-Encoding") == "gzip"
+    assert "Accept-Encoding" in packed.headers.get("Vary", "")
+    rows = gzip.decompress(packed.data)
+    assert b'"rows"' in rows and len(rows) > len(packed.data) * 3
+    plain = client.get("/api/images?limit=50", headers=accept)           # loopback
+    assert "Content-Encoding" not in plain.headers and plain.json["rows"]
+    small = client.get("/api/auth/status", environ_base=REMOTE, headers=accept)
+    assert small.status_code == 200 and "Content-Encoding" not in small.headers
+    # a file is never touched
+    thumb = client.get("/thumb?path=" + library["paths"][0], environ_base=REMOTE, headers=accept)
+    assert thumb.status_code == 200 and "Content-Encoding" not in thumb.headers
 
 
 def test_pin_round_trip(client):

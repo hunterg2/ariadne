@@ -8,6 +8,9 @@ import { reportError, toast } from "./toasts.svelte";
 import { settings, ui } from "./settings.svelte";
 
 export const PAGE = 200;
+/* how long the visible range has to hold still, while it keeps changing,
+   before its pages are fetched (ms) */
+const RANGE_SETTLE = 24;
 
 export interface Filters {
   q: string;
@@ -42,6 +45,12 @@ class Library {
   loadedPages = new Set<number>();
   inflight = new Map<number, Promise<void>>();
   generation = 0;
+  /* the pages the grid shows right now; a fetch for any other page is
+     dropped, so a drag through the scrollbar asks for its destination only */
+  private wanted = new Set<number>();
+  private aborts = new Map<number, AbortController>();
+  private rangeTimer: ReturnType<typeof setTimeout> | null = null;
+  private rangeChangedAt = 0;
 
   selected = new SvelteSet<string>();
   focus = $state(-1);
@@ -201,18 +210,40 @@ class Library {
     return this.ensurePage(0);
   }
 
-  async ensureRange(start: number, end: number) {
+  /* The grid's visible rows changed. Pages it no longer shows stop
+     loading; the ones it shows load now, or, while the range is still
+     moving (a scrollbar drag changes it every frame), once it has held
+     still for a moment. Before this every page a drag passed was fetched
+     and parsed, two hundred rows each, and the destination waited behind
+     them all. */
+  ensureRange(start: number, end: number): Promise<void> {
     const first = Math.max(0, Math.floor(start / PAGE));
     const last = Math.max(0, Math.floor(Math.max(end - 1, 0) / PAGE));
-    for (let p = first; p <= last; p++) await this.ensurePage(p);
+    this.wanted = new Set<number>();
+    for (let p = first; p <= last; p++) this.wanted.add(p);
+    for (const [p, ctl] of this.aborts) {
+      if (!this.wanted.has(p)) { ctl.abort(); this.aborts.delete(p); this.inflight.delete(p); }
+    }
+    const now = performance.now();
+    const moving = now - this.rangeChangedAt < RANGE_SETTLE;
+    this.rangeChangedAt = now;
+    if (this.rangeTimer) { clearTimeout(this.rangeTimer); this.rangeTimer = null; }
+    const fetchWanted = () => Promise.all(Array.from(this.wanted, (p) => this.ensurePage(p, true))).then(() => undefined);
+    if (!moving) return fetchWanted();
+    return new Promise((resolve) => {
+      this.rangeTimer = setTimeout(() => { this.rangeTimer = null; fetchWanted().then(resolve); }, RANGE_SETTLE);
+    });
   }
 
-  ensurePage(page: number): Promise<void> {
+  /* ``windowed``: the grid asked, so a later ensureRange may drop it */
+  ensurePage(page: number, windowed = false): Promise<void> {
     if (this.loadedPages.has(page)) return Promise.resolve();
     const existing = this.inflight.get(page);
     if (existing) return existing;
     const gen = this.generation;
-    const promise = api.listImages(this.params(page * PAGE))
+    const ctl = windowed ? new AbortController() : null;
+    if (ctl) this.aborts.set(page, ctl);
+    const promise = api.listImages(this.params(page * PAGE), ctl?.signal)
       .then((res) => {
         if (gen !== this.generation) return;
         this.total = res.total;
@@ -223,9 +254,13 @@ class Library {
         this.loading = false;
       })
       .catch((e) => {
+        if (ctl?.signal.aborted) return;                 // the grid moved on
         if (gen === this.generation) { this.loading = false; reportError(e, "Could not list images."); }
       })
-      .finally(() => this.inflight.delete(page));
+      .finally(() => {
+        if (this.inflight.get(page) === promise) this.inflight.delete(page);
+        if (ctl && this.aborts.get(page) === ctl) this.aborts.delete(page);
+      });
     this.inflight.set(page, promise);
     return promise;
   }

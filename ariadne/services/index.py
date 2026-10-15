@@ -17,6 +17,8 @@ import os
 import threading
 import time
 
+from PIL import Image
+
 from ariadne import config, metadata, safety, store, text
 from ariadne import db as db_module
 from ariadne.db import db
@@ -149,8 +151,7 @@ def scan_folder(folder, recursive=False):
             elif old["mtime"] != st.st_mtime_ns or old["size"] != st.st_size or old["missing"]:
                 updated += 1
             else:
-                d.execute("UPDATE images SET seen_at=? WHERE path=?", (now, path))
-                continue
+                continue            # unchanged: marked seen below, all at once
             rows.append((path, parent, os.path.basename(parent), e.name, ext,
                          st.st_mtime_ns, st.st_size, st.st_ctime, now))
     except OSError as exc:
@@ -167,6 +168,14 @@ def scan_folder(folder, recursive=False):
     gone = [p for p in known if p not in seen and not known[p]["missing"]]
     if gone:
         d.executemany("UPDATE images SET missing=1 WHERE path=?", [(p,) for p in gone])
+    # seen_at puts the most recently scanned folder first in the queue of
+    # files still to be read (enrich), so only rows still waiting need the
+    # new stamp: one statement, touching nothing in a folder that is fully
+    # read. It used to be an UPDATE per unchanged file, 25 us each, a
+    # quarter second per ten thousand, on every folder open and every start.
+    if len(seen) > len(rows):
+        d.execute(f"UPDATE images SET seen_at=? WHERE {where} AND missing=0 "
+                  "AND indexed_at IS NULL", [now, *args])
     d.commit()
     return {"added": added, "updated": updated, "missing": len(gone),
             "total": len(seen), "folder": folder, "recursive": bool(recursive)}
@@ -210,7 +219,14 @@ def enrich_one(path, warm=False, quality=config.THUMB_QUALITY):
     """Read one file: generation metadata, camera EXIF, kind. With ``warm``
     the thumbnail is built too, while the file is still in the disk cache, so
     the grid never has to wait for it. Returns the kind or None when the file
-    could not be read."""
+    could not be read.
+
+    The file is opened once and handed to each reader. The generation data
+    (which decodes the image for its hash), the camera tags and the
+    thumbnail each opened it for themselves before: a PNG was decoded
+    twice, the file opened four times, and the records went in with three
+    commits rather than one. On a fresh library that was most of the
+    indexer's time."""
     d = db()
     try:
         st = os.stat(path)
@@ -218,23 +234,31 @@ def enrich_one(path, warm=False, quality=config.THUMB_QUALITY):
         d.execute("UPDATE images SET missing=1 WHERE path=?", (path,))
         d.commit()
         return None
-    meta = get_metadata(path, st)
-    camera = metadata.read_camera(path)
-    kind = kind_of(meta, camera)
-    lat = _float(camera.get("latitude"))
-    lon = _float(camera.get("longitude"))
-    d.execute(
-        "UPDATE meta SET kind=?, camera_make=?, camera_model=?, lens=?, exposure=?, "
-        "f_number=?, iso=?, focal=?, taken_at=?, lat=?, lon=?, software=? WHERE path=?",
-        (kind, camera.get("make", ""), camera.get("model", ""), camera.get("lens", ""),
-         camera.get("exposure", ""), camera.get("aperture", ""), camera.get("iso", ""),
-         camera.get("focal", ""), camera.get("date_taken", ""), lat, lon,
-         camera.get("software", ""), path))
-    d.execute("UPDATE images SET width=?, height=?, kind=?, indexed_at=?, missing=0 WHERE path=?",
-              (meta["width"], meta["height"], kind, time.time(), path))
-    d.commit()
-    if warm:
-        thumbs.build_thumb(path, quality)
+    try:
+        img = Image.open(path)
+    except (OSError, ValueError, Image.DecompressionBombError):
+        img = None                  # each reader reports an unreadable file its own way
+    try:
+        meta = get_metadata(path, st, img=img, commit=False)
+        camera = metadata.read_camera(path, img=img)
+        kind = kind_of(meta, camera)
+        lat = _float(camera.get("latitude"))
+        lon = _float(camera.get("longitude"))
+        d.execute(
+            "UPDATE meta SET kind=?, camera_make=?, camera_model=?, lens=?, exposure=?, "
+            "f_number=?, iso=?, focal=?, taken_at=?, lat=?, lon=?, software=? WHERE path=?",
+            (kind, camera.get("make", ""), camera.get("model", ""), camera.get("lens", ""),
+             camera.get("exposure", ""), camera.get("aperture", ""), camera.get("iso", ""),
+             camera.get("focal", ""), camera.get("date_taken", ""), lat, lon,
+             camera.get("software", ""), path))
+        d.execute("UPDATE images SET width=?, height=?, kind=?, indexed_at=?, missing=0 WHERE path=?",
+                  (meta["width"], meta["height"], kind, time.time(), path))
+        if warm:
+            thumbs.build_thumb(path, quality, st=st, img=img, commit=False)
+        d.commit()
+    finally:
+        if img is not None:
+            img.close()
     return kind
 
 
@@ -480,6 +504,26 @@ def query_images(folder=None, q="", sort="date_desc", offset=0, limit=200,
         "rows": [_row_dict(r, tags[r["path"]], cols[r["path"]]) for r in rows],
         "pending": pending_count(folder, recursive) if folder else pending_count(),
     }
+
+
+def known_paths(paths):
+    """The subset of ``paths`` the index holds, in the order given, one
+    query per 500. The index only ever takes files under the listed
+    folders, so membership is as good as ``safety.is_path_allowed`` for a
+    route that reads rows by path and touches no file: that guard
+    realpaths each path, 17 ms for a page of 200, which the tile badges
+    paid after every page the grid loaded."""
+    wanted = [p for p in paths if isinstance(p, str)]
+    if not wanted:
+        return []
+    d = db()
+    known = set()
+    for start in range(0, len(wanted), 500):
+        chunk = wanted[start:start + 500]
+        marks = ",".join("?" * len(chunk))
+        known.update(r["path"] for r in d.execute(
+            f"SELECT path FROM images WHERE path IN ({marks})", chunk))
+    return [p for p in wanted if p in known]
 
 
 def get_image(path):

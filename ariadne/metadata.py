@@ -38,9 +38,9 @@ original's text chunks and EXIF across, trimmed to the generation data, or
 dropped, as the user chose; location data is stripped unless asked for.
 
 Public API:
-    extract(path, want_hash=True) -> dict     generation settings, size, phash
+    extract(path, want_hash=True, img=None) -> dict   generation settings, size, phash
     read_chunks(img) -> dict                  every text blob in the file
-    read_camera(path) -> dict                 camera EXIF tags, as text
+    read_camera(path, img=None) -> dict       camera EXIF tags, as text
     dhash(img) -> str                         16 hex characters
     oriented(img) -> Image                    EXIF rotation applied
     collect_chunks(path, mode) -> dict        chunks to carry into a copy
@@ -49,6 +49,7 @@ Public API:
 Run ``python metadata.py IMAGE [IMAGE ...]`` to print what it reads from each.
 """
 
+import contextlib
 import json
 import os
 import re
@@ -856,7 +857,20 @@ def oriented(img):
         return img
 
 
-def extract(path, want_hash=True):
+@contextlib.contextmanager
+def opened(path, img=None):
+    """``Image.open(path)``, closed afterwards; or ``img``, an image the
+    caller already has open for ``path``, left open. The indexer reads a
+    file once for the generation data, the camera tags and the thumbnail,
+    where each used to open the file (and decode a PNG) for itself."""
+    if img is not None:
+        yield img
+        return
+    with Image.open(path) as own:
+        yield own
+
+
+def extract(path, want_hash=True, img=None):
     meta = blank()
     used = []
 
@@ -867,7 +881,7 @@ def extract(path, want_hash=True):
         return mark
 
     try:
-        with Image.open(path) as img:
+        with opened(path, img) as img:
             chunks = read_chunks(img)
             shown = oriented(img)
             # report the size the image actually displays at, not the stored one
@@ -1361,11 +1375,11 @@ def _present(field, value):
     return str(value).strip("\x00").strip()
 
 
-def read_camera(path):
+def read_camera(path, img=None):
     """The camera tags the file carries, as text, keyed as in EXIF_FIELDS."""
     out = {}
     try:
-        with Image.open(path) as img:
+        with opened(path, img) as img:
             main = img.getexif()
             sub = main.get_ifd(EXIF_IFD)
             gps = main.get_ifd(GPS_IFD) or {}

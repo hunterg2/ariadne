@@ -6,9 +6,11 @@ browser; nothing in here does any of that, so tests can create as many apps
 as they like.
 """
 
+import gzip
 import mimetypes
 import platform
 import sqlite3
+import sys
 
 from flask import Flask, jsonify, request
 from PIL import Image
@@ -29,6 +31,21 @@ mimetypes.add_type("application/manifest+json", ".webmanifest")
 
 __version__ = "2.1.0"
 
+# JSON answers to other devices are gzipped past this size, at this level
+# (4: a 360 KB page of the grid becomes 48 KB in under 2 ms)
+GZIP_FROM = 2048
+GZIP_LEVEL = 4
+
+
+def os_name():
+    """The operating system for the log, as ``platform.platform()`` gives
+    it, except on Windows, where that call asks WMI for the version and
+    took 60 ms of every start for one log line."""
+    if sys.platform == "win32":
+        v = sys.getwindowsversion()
+        return f"Windows-{v.major}.{v.minor}.{v.build}"
+    return platform.platform()
+
 
 def create_app(app_dir=None):
     """Build the Flask app and open the active project.
@@ -44,7 +61,7 @@ def create_app(app_dir=None):
     # every report from here on lands in ariadne.log beside the data
     applog.setup(config.APP_DIR)
     applog.log.info(f"[start] Ariadne {__version__} on Python {platform.python_version()} "
-                    f"({platform.platform()}), data in {config.APP_DIR}")
+                    f"({os_name()}), data in {config.APP_DIR}")
 
     static_folder = str(config.WEB_DIST) if config.WEB_DIST.exists() else None
     app = Flask(
@@ -84,10 +101,28 @@ def create_app(app_dir=None):
         return None
 
     @app.after_request
-    def no_sniffing(response):
+    def headers(response):
         # a browser must take the type a route says: /image serves raster
         # images only, and a file served as one must not be read as a page
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        # the bundle files carry a content hash in their names, so a copy
+        # the browser holds is good until the page names another file;
+        # Flask's default had it ask again for the half megabyte each open
+        if request.path.startswith("/assets/") and response.status_code == 200:
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        # JSON for another device goes gzipped: a page of the grid is a few
+        # hundred KB that packs to a tenth, which a phone on wifi feels. On
+        # this computer the packing costs more than the bytes, so loopback
+        # answers go as they are. Files (send_file) pass through untouched.
+        if (response.mimetype == "application/json" and response.status_code == 200
+                and not response.direct_passthrough
+                and "gzip" in request.headers.get("Accept-Encoding", "")
+                and not auth.is_loopback(request.remote_addr)):
+            data = response.get_data()
+            if len(data) > GZIP_FROM:
+                response.set_data(gzip.compress(data, GZIP_LEVEL))
+                response.headers["Content-Encoding"] = "gzip"
+                response.vary.add("Accept-Encoding")
         return response
 
     # a request lets go of its database handle when it ends, so an idle

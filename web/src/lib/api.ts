@@ -98,7 +98,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
-const get = <T,>(url: string) => request<T>(url);
+const get = <T,>(url: string, signal?: AbortSignal) => request<T>(url, signal ? { signal } : undefined);
 const post = <T,>(url: string, body?: unknown, method = "POST") =>
   request<T>(url, {
     method,
@@ -134,7 +134,7 @@ export interface ListParams {
   kind?: string | null; tag?: string | null; collection?: string | null;
 }
 
-export function listImages(p: ListParams) {
+export function listImages(p: ListParams, signal?: AbortSignal) {
   const qs = new URLSearchParams();
   if (p.folder) qs.set("folder", p.folder);
   if (p.folder && p.recursive) qs.set("recursive", "1");
@@ -148,7 +148,7 @@ export function listImages(p: ListParams) {
   if (p.kind) qs.set("kind", p.kind);
   if (p.tag) qs.set("tag", p.tag);
   if (p.collection) qs.set("collection", p.collection);
-  return get<Page>("/api/images?" + qs.toString());
+  return get<Page>("/api/images?" + qs.toString(), signal);
 }
 export const getImage = (path: string) => get<{ image: ImageRow }>("/api/images/one?path=" + enc(path));
 export const scanFolder = (folder: string, wait = false, recursive = false) =>
@@ -264,6 +264,8 @@ export const authStatus = () => get<AuthStatus>("/api/auth/status");
 export const enterPin = (pin: string) => post<AuthStatus>("/api/auth/pin", { pin });
 export const setPin = (pin: string) => post<AuthStatus>("/api/settings/pin", { pin });
 export const clearPin = () => post<AuthStatus>("/api/settings/pin", {}, "DELETE");
+export const draftCaption = (paths: string[], kind: "caption" | "alt", limit?: number) => post<{ success: boolean; text: string; error?: string; backend: string }>("/api/captions/draft", { paths, kind, limit });
+export const socialInspect = (paths: string[]) => get<{ prompt: number; model: number; camera: number; gps: number; edited: number; meta_edited: number; total: number }>("/api/social/inspect?paths=" + enc(JSON.stringify(paths)));
 
 /* image editor: what the saved copy carries */
 export type MetaLevel = "generation" | "all" | "none";
